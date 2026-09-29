@@ -21,6 +21,9 @@ type Conn =
 type VideoState = "none" | "requesting" | "incoming" | "active";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+// Accepted but the peer-to-peer link never came up (e.g. blocked by a strict
+// NAT — we're STUN-only). Give up instead of spinning on "Connecting…".
+const CONNECT_TIMEOUT_MS = 25_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
@@ -50,7 +53,9 @@ export default function Home() {
 
   const peerRef = useRef<PeerSession | null>(null);
   const msgId = useRef(0);
-  const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Times out whichever wait is in progress: an unanswered request, or an
+  // accepted connection whose WebRTC link never opens.
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showNotice(text: string) {
     setNotice(text);
@@ -62,7 +67,7 @@ export default function Home() {
   }
 
   function teardown(message?: string) {
-    if (requestTimer.current) clearTimeout(requestTimer.current);
+    if (pendingTimer.current) clearTimeout(pendingTimer.current);
     peerRef.current?.close();
     peerRef.current = null;
     setLocalStream(null);
@@ -74,6 +79,12 @@ export default function Home() {
   }
 
   function startPeer(peerId: string, initiator: boolean) {
+    // Tell the peer (and the server, which frees both of us) before tearing
+    // down locally — otherwise we'd both stay marked busy.
+    const abandon = (message: string) => {
+      void sendSignal(sessionId, peerId, "end");
+      teardown(message);
+    };
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
         void sendSignal(sessionId, peerId, type, payload);
@@ -82,15 +93,22 @@ export default function Home() {
       onControl: (ctrl) => handleControl(ctrl),
       onRemoteStream: (stream) => setRemoteStream(stream),
       onConnectionState: (state) => {
-        if (state === "failed") {
-          teardown("Connection failed (network).");
+        if (state === "failed" && peerRef.current === ps) {
+          abandon("Connection failed (network).");
         }
       },
       onChannelOpen: () => {
+        if (pendingTimer.current) clearTimeout(pendingTimer.current);
         setConn({ kind: "connected", peerId });
       },
     });
     peerRef.current = ps;
+    pendingTimer.current = setTimeout(() => {
+      const c = connRef.current;
+      if (c.kind === "connecting" && c.peerId === peerId) {
+        abandon("Couldn't reach the stranger. Try someone else?");
+      }
+    }, CONNECT_TIMEOUT_MS);
   }
 
   function handleControl(ctrl: PeerControl) {
@@ -132,7 +150,7 @@ export default function Home() {
     if (connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
     void sendSignal(sessionId, peerId, "request");
-    requestTimer.current = setTimeout(() => {
+    pendingTimer.current = setTimeout(() => {
       if (
         connRef.current.kind === "requesting" &&
         connRef.current.peerId === peerId
@@ -221,7 +239,7 @@ export default function Home() {
       case "accept": {
         const c = connRef.current;
         if (c.kind === "requesting" && c.peerId === sig.fromId) {
-          if (requestTimer.current) clearTimeout(requestTimer.current);
+          if (pendingTimer.current) clearTimeout(pendingTimer.current);
           startPeer(sig.fromId, true);
           setConn({ kind: "connecting", peerId: sig.fromId });
         }
@@ -230,7 +248,7 @@ export default function Home() {
       case "decline": {
         const c = connRef.current;
         if (c.kind === "requesting" && c.peerId === sig.fromId) {
-          if (requestTimer.current) clearTimeout(requestTimer.current);
+          if (pendingTimer.current) clearTimeout(pendingTimer.current);
           teardown("Request declined.");
         }
         break;
@@ -258,6 +276,8 @@ export default function Home() {
           c.peerId === sig.fromId
         ) {
           if (c.kind === "incoming") setConn({ kind: "idle" });
+          else if (c.kind === "connecting")
+            teardown("Couldn't connect to the stranger.");
           else teardown("Stranger disconnected.");
         }
         break;

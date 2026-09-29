@@ -10,12 +10,19 @@ const HONG_KONG = { latitude: 22.3193, longitude: 114.1694 };
 async function openStranger(
   browser: Browser,
   geolocation: { latitude: number; longitude: number },
+  { unreachable = false } = {},
 ): Promise<Page> {
   const context = await browser.newContext({
     geolocation,
     permissions: ["geolocation", "camera", "microphone"],
   });
   const page = await context.newPage();
+  if (unreachable) {
+    // Simulate a network where no ICE path works: drop all remote candidates.
+    await page.addInitScript(() => {
+      RTCPeerConnection.prototype.addIceCandidate = async () => {};
+    });
+  }
   await page.goto("/");
   await page.getByRole("button", { name: /enter pulse/i }).click();
   return page;
@@ -79,6 +86,23 @@ test("two strangers can find each other, chat, video call and leave", async ({
     await expect(bob.getByPlaceholder(/type a message/i)).toBeVisible();
   });
 
+  await test.step("video can be restarted, from the other side", async () => {
+    await expect(bob.getByRole("button", { name: "Video" })).toBeEnabled();
+    await bob.getByRole("button", { name: "Video" }).click();
+    await expect(alice.getByText(/start video call/i)).toBeVisible();
+    await alice.getByRole("button", { name: "Accept" }).click();
+    await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
+    await expect.poll(() => remoteVideoIsPlaying(bob)).toBe(true);
+    await bob.getByRole("button", { name: "End video" }).click();
+    await expect(alice.getByPlaceholder(/type a message/i)).toBeVisible();
+  });
+
+  await test.step("chat still works after video", async () => {
+    await alice.getByPlaceholder(/type a message/i).fill("still here?");
+    await alice.getByRole("button", { name: "Send" }).click();
+    await expect(bob.getByText("still here?")).toBeVisible();
+  });
+
   await test.step("hanging up frees both users", async () => {
     await bob.getByRole("button", { name: "End", exact: true }).click();
     await expect(alice.getByPlaceholder(/type a message/i)).toBeHidden();
@@ -100,5 +124,34 @@ test("two strangers can find each other, chat, video call and leave", async ({
     await expect(alice.locator(".pulse-dot")).toHaveCount(0);
   });
 
-  await alice.context().close();
+  await alice.close({ runBeforeUnload: true });
+});
+
+test("a connection that can't be established frees both users", async ({
+  browser,
+}) => {
+  const alice = await openStranger(browser, MANILA, { unreachable: true });
+  const bob = await openStranger(browser, HONG_KONG, { unreachable: true });
+
+  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
+  await alice.locator(".pulse-dot").click();
+  await bob.getByRole("button", { name: "Accept" }).click();
+
+  // Whichever side times out first gives up and tells the other; both get a
+  // "couldn't reach / couldn't connect" notice rather than spinning forever.
+  await Promise.all(
+    [alice, bob].map((p) =>
+      expect(p.getByText(/couldn't (reach|connect)/i)).toBeVisible({
+        timeout: 40_000,
+      }),
+    ),
+  );
+  await expect(alice.getByText("Connecting…", { exact: true })).toBeHidden();
+  await expect(bob.getByText("Connecting…", { exact: true })).toBeHidden();
+  // Neither is left marked busy on the server.
+  await expect(alice.locator(".pulse-dot")).toHaveCSS("opacity", "1");
+  await expect(bob.locator(".pulse-dot")).toHaveCSS("opacity", "1");
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
 });
