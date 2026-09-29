@@ -14,6 +14,19 @@ interface PeerCallbacks {
   onChannelOpen: () => void;
 }
 
+const CONTROLS: readonly string[] = [
+  "video-request",
+  "video-accept",
+  "video-decline",
+  "video-end",
+];
+
+export const MAX_CHAT_LENGTH = 1000;
+const MAX_MESSAGE_BYTES = 4 * 1024;
+const INBOUND_BURST = 20;
+const INBOUND_WINDOW_MS = 5_000;
+const MAX_QUEUED_CANDIDATES = 50;
+
 const ICE_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
@@ -74,28 +87,56 @@ export class PeerSession {
   private wireDataChannel(dc: RTCDataChannel) {
     dc.onopen = () => this.cb.onChannelOpen();
     dc.onmessage = (e) => {
+      // The other side is an anonymous stranger: accept only small, known
+      // messages at a human pace, so a hostile peer can't freeze the tab.
+      if (typeof e.data !== "string" || e.data.length > MAX_MESSAGE_BYTES) {
+        return;
+      }
+      if (!this.inboundAllowed()) return;
       try {
-        const msg = JSON.parse(e.data as string);
-        if (msg.t === "chat" && typeof msg.text === "string") {
+        const msg = JSON.parse(e.data);
+        if (
+          msg.t === "chat" &&
+          typeof msg.text === "string" &&
+          msg.text.length <= MAX_CHAT_LENGTH
+        ) {
           this.cb.onChat(msg.text);
-        } else if (msg.t === "ctrl" && typeof msg.ctrl === "string") {
+        } else if (msg.t === "ctrl" && CONTROLS.includes(msg.ctrl)) {
           this.cb.onControl(msg.ctrl as PeerControl);
         }
       } catch {}
     };
   }
 
+  // Sliding window: at most INBOUND_BURST messages per INBOUND_WINDOW_MS.
+  private inbound: number[] = [];
+  private inboundAllowed(): boolean {
+    const now = Date.now();
+    this.inbound = this.inbound.filter((t) => now - t < INBOUND_WINDOW_MS);
+    if (this.inbound.length >= INBOUND_BURST) return false;
+    this.inbound.push(now);
+    return true;
+  }
+
+  // Signals come from a stranger (relayed by the server); anything malformed
+  // or out of order is dropped instead of surfacing as an unhandled error.
   async handleSignal(type: DescType, payload: string) {
     if (this.closed) return;
-    const data = JSON.parse(payload);
+    try {
+      await this.applySignal(type, JSON.parse(payload));
+    } catch {}
+  }
 
+  private async applySignal(type: DescType, data: unknown) {
     if (type === "ice") {
       if (!this.pc.remoteDescription) {
-        this.pendingCandidates.push(data);
+        if (this.pendingCandidates.length < MAX_QUEUED_CANDIDATES) {
+          this.pendingCandidates.push(data as RTCIceCandidateInit);
+        }
         return;
       }
       try {
-        await this.pc.addIceCandidate(data);
+        await this.pc.addIceCandidate(data as RTCIceCandidateInit);
       } catch {}
       return;
     }

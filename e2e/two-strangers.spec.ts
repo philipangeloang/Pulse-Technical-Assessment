@@ -11,7 +11,7 @@ const HONG_KONG = { latitude: 22.3193, longitude: 114.1694 };
 async function openStranger(
   browser: Browser,
   geolocation: { latitude: number; longitude: number },
-  { unreachable = false, controllableClock = false } = {},
+  { unreachable = false, controllableClock = false, hostile = false } = {},
 ): Promise<Page> {
   const context = await browser.newContext({
     geolocation,
@@ -31,6 +31,21 @@ async function openStranger(
   // Fake timers that run in real time until paused — lets a test "freeze" the
   // tab the way a backgrounded or suspended browser does.
   if (controllableClock) await page.clock.install();
+  if (hostile) {
+    // Expose our own data channel so the test can bypass the app and send
+    // raw messages, like a modified client would.
+    await page.addInitScript(() => {
+      const create = RTCPeerConnection.prototype.createDataChannel;
+      RTCPeerConnection.prototype.createDataChannel = function (
+        this: RTCPeerConnection,
+        ...args: Parameters<typeof create>
+      ) {
+        const dc = create.apply(this, args);
+        (window as unknown as { __dc: RTCDataChannel }).__dc = dc;
+        return dc;
+      };
+    });
+  }
   if (unreachable) {
     // Simulate a network where no ICE path works: drop all remote candidates.
     await page.addInitScript(() => {
@@ -161,6 +176,33 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await alice.close({ runBeforeUnload: true });
+});
+
+test("a hostile peer can't flood or bloat the chat", async ({ browser }) => {
+  const mallory = await openStranger(browser, MANILA, { hostile: true });
+  const bob = await openStranger(browser, HONG_KONG);
+
+  await expect(mallory.locator(".pulse-dot")).toHaveCount(1);
+  await mallory.locator(".pulse-dot").click();
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
+
+  await mallory.evaluate(() => {
+    const dc = (window as unknown as { __dc: RTCDataChannel }).__dc;
+    dc.send(JSON.stringify({ t: "chat", text: "x".repeat(5_000) }));
+    for (let i = 0; i < 500; i++) {
+      dc.send(JSON.stringify({ t: "chat", text: `spam ${i}` }));
+    }
+  });
+
+  await expect(bob.getByText("spam 0", { exact: true })).toBeVisible();
+  await bob.waitForTimeout(1_000);
+  const shown = await bob.getByText(/^spam \d+$/).count();
+  expect(shown).toBeLessThanOrEqual(20);
+  await expect(bob.getByText("x".repeat(100))).toHaveCount(0);
+
+  await mallory.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
 });
 
 test("the raw location never leaves the browser", async ({ browser }) => {
