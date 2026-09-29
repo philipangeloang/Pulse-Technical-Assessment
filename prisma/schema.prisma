@@ -29,6 +29,16 @@ model Presence {
   @@index([pendingTo])
 }
 
+// Fixed-window counters for abuse limits (joins, connection requests).
+// Keys are HMACs of the client IP / session id — raw IPs are never stored.
+model RateLimit {
+  key         String   @id
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int
+
+  @@index([windowStart])
+}
+
 model Signal {
   // Mailbox for connection requests + WebRTC signaling only.
   id        String   @id @default(uuid())

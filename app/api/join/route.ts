@@ -2,6 +2,12 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { applyPrivacyOffset, isValidLatLng } from "@/lib/geo";
 import { newSessionToken } from "@/lib/auth";
+import {
+  clientIp,
+  limitShared,
+  sweepRateLimits,
+  tooManyRequests,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +18,13 @@ export const dynamic = "force-dynamic";
 // token the client must present on every other call. Raw coordinates are
 // never stored.
 export async function POST(request: NextRequest) {
+  // Room for a household/office sharing an IP (plus rejoins), but stops
+  // scripts from flooding the globe with fake dots.
+  if (!(await limitShared("join", clientIp(request), 30, 5 * 60_000))) {
+    return tooManyRequests(60);
+  }
+  await sweepRateLimits();
+
   let body: unknown;
   try {
     body = await request.json();

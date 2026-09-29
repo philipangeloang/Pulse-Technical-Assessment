@@ -171,7 +171,12 @@ export default function Home() {
   function requestConnection(peerId: string) {
     if (connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
-    void signal(peerId, "request");
+    void signal(peerId, "request").then((ok) => {
+      const c = connRef.current;
+      if (!ok && c.kind === "requesting" && c.peerId === peerId) {
+        teardown("Couldn't send that request — try again in a moment.");
+      }
+    });
     pendingTimer.current = setTimeout(() => {
       if (
         connRef.current.kind === "requesting" &&

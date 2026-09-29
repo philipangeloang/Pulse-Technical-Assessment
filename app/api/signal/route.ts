@@ -3,6 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { pair, unpair } from "@/lib/connections";
 import { authenticate, readToken, unauthorized } from "@/lib/auth";
 import { isSessionId, isSignalType, normalizePayload } from "@/lib/validate";
+import {
+  clientIp,
+  limitLocal,
+  limitShared,
+  tooManyRequests,
+} from "@/lib/rate-limit";
 import type { SignalType } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -37,6 +43,18 @@ export async function POST(request: NextRequest) {
   if (!isSignalType(type)) return badRequest("invalid type");
   const payloadStr = normalizePayload(type, payload);
   if (payloadStr === undefined) return badRequest("invalid payload");
+
+  if (type === "request") {
+    // A person taps a dot or two a minute; this stops request spam aimed at
+    // someone (per session) and across throwaway sessions (per IP).
+    const ok =
+      (await limitShared("req", me.id, 6, 60_000)) &&
+      (await limitShared("req-ip", clientIp(request), 30, 60_000));
+    if (!ok) return tooManyRequests(30);
+  } else if (!limitLocal("sig", me.id, 300, 60_000)) {
+    // One connection + video renegotiation is ~20–60 signals.
+    return tooManyRequests(10);
+  }
 
   switch (type) {
     case "request": {

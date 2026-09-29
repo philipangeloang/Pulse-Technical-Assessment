@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { releasePartnersOf } from "@/lib/connections";
 import { authenticateAndTouch, readToken, unauthorized } from "@/lib/auth";
+import { clientIp, limitLocal, tooManyRequests } from "@/lib/rate-limit";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import type { PollResponse } from "@/lib/types";
 
@@ -13,6 +14,12 @@ export const dynamic = "force-dynamic";
 // (2) reaps stale presence + orphan signals, (3) returns the filtered online
 // peers, and (4) drains this user's mailbox.
 export async function GET(request: NextRequest) {
+  // Checked before touching the DB. A tab polls ~40×/min; this leaves room
+  // for several tabs behind one IP while capping floods.
+  if (!limitLocal("poll-ip", clientIp(request), 600, 60_000)) {
+    return tooManyRequests(10);
+  }
+
   // 1) Authenticate + heartbeat. 401 = unknown token or already reaped; the
   // client re-joins as a new session when it sees that.
   const me = await authenticateAndTouch(readToken(request));
