@@ -58,7 +58,7 @@ API, then wrote `e2e/api-security.spec.ts` (red first) as the regression suite.
   without device attestation.
 - **Mapbox token is public by design** — restrict it to the production URL in the
   Mapbox dashboard.
-- **No moderation / report / block yet** — addressed in Phase 4.
+- **No report / block mechanism yet** for abusive strangers.
 
 Tests: `npm run test:e2e` runs the security suite and the two-browser flows; all 16 pass
 against both `next dev` and a production build.
