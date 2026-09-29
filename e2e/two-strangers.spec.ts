@@ -19,6 +19,15 @@ async function openStranger(
     extraHTTPHeaders: { "x-forwarded-for": randomClientIp() },
   });
   const page = await context.newPage();
+  // Record Content-Security-Policy violations so tests can assert the
+  // strict CSP doesn't break the map, video, or Next's own scripts.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __csp: string[] };
+    w.__csp = [];
+    document.addEventListener("securitypolicyviolation", (e) => {
+      w.__csp.push(`${e.violatedDirective} ${e.blockedURI}`);
+    });
+  });
   // Fake timers that run in real time until paused — lets a test "freeze" the
   // tab the way a backgrounded or suspended browser does.
   if (controllableClock) await page.clock.install();
@@ -31,6 +40,10 @@ async function openStranger(
   await page.goto("/");
   await page.getByRole("button", { name: /enter pulse/i }).click();
   return page;
+}
+
+function cspViolations(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __csp: string[] }).__csp);
 }
 
 async function remoteVideoIsPlaying(page: Page): Promise<boolean> {
@@ -106,6 +119,11 @@ test("two strangers can find each other, chat, video call and leave", async ({
     await alice.getByPlaceholder(/type a message/i).fill("still here?");
     await alice.getByRole("button", { name: "Send" }).click();
     await expect(bob.getByText("still here?")).toBeVisible();
+  });
+
+  await test.step("the strict CSP blocked nothing along the way", async () => {
+    expect(await cspViolations(alice)).toEqual([]);
+    expect(await cspViolations(bob)).toEqual([]);
   });
 
   await test.step("hanging up frees both users", async () => {
