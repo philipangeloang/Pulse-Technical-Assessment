@@ -1,30 +1,28 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { releasePartnersOf } from "@/lib/connections";
+import { authenticate, readToken, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// POST /api/leave — body { id }. Removes the presence row and any pending
-// signals to/from this user, and frees their partner if connected. Called via navigator.sendBeacon on tab close, so
-// the body may arrive as text — parse defensively.
+// POST /api/leave — body { token } (or Authorization: Bearer). Removes the
+// caller's presence row and any pending signals to/from them, and frees
+// their partner if connected. Called via navigator.sendBeacon on tab close
+// (which can't set headers, hence the token in the body), so the body may
+// arrive as text — parse defensively.
 export async function POST(request: NextRequest) {
-  let id: string | undefined;
+  let body: unknown;
   try {
     const text = await request.text();
-    id = text ? (JSON.parse(text)?.id as string | undefined) : undefined;
+    body = text ? JSON.parse(text) : undefined;
   } catch {
-    id = undefined;
+    body = undefined;
   }
 
-  if (typeof id !== "string" || !id) {
-    return Response.json({ error: "invalid id" }, { status: 400 });
-  }
-
-  const me = await prisma.presence.findUnique({
-    where: { id },
-    select: { id: true, peerId: true },
-  });
+  const me = await authenticate(readToken(request, body));
+  if (!me) return unauthorized();
+  const { id } = me;
 
   // Independent cleanup deletes — no atomicity needed (and interactive
   // transactions are unreliable over a PgBouncer pooler).
@@ -34,7 +32,7 @@ export async function POST(request: NextRequest) {
   await prisma.presence.deleteMany({ where: { id } });
 
   // After the mailbox purge, so the partner's "end" isn't deleted with it.
-  if (me) await releasePartnersOf([me]);
+  await releasePartnersOf([me]);
 
   return Response.json({ ok: true });
 }

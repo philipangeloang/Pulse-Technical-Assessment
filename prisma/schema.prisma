@@ -12,14 +12,15 @@ datasource db {
 }
 
 model Presence {
-  id       String   @id // client-generated session uuid
-  lat      Float // ALREADY privacy-offset coords (raw is never stored)
-  lng      Float
+  id        String   @id @default(uuid()) // public session id (server-assigned)
+  tokenHash String   @unique // sha256 of the session's secret bearer token
+  lat       Float // ALREADY privacy-offset coords (raw is never stored)
+  lng       Float
   // Session id of the current connection partner; null = available.
   // Knowing *who* the partner is (not just "busy") lets leave/reap/end
   // free the other side too.
-  peerId   String?
-  lastSeen DateTime
+  peerId    String?
+  lastSeen  DateTime
 
   @@index([lastSeen])
 }

@@ -6,10 +6,17 @@ import WorldMap from "./components/WorldMap";
 import ConnectionPrompt from "./components/ConnectionPrompt";
 import ChatPanel, { type ChatMessage } from "./components/ChatPanel";
 import VideoPanel from "./components/VideoPanel";
-import { join, leave, poll, sendSignal } from "@/lib/api";
+import {
+  join,
+  leave,
+  poll,
+  sendSignal,
+  SessionExpiredError,
+  type Session,
+} from "@/lib/api";
 import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
 import { POLL_INTERVAL_MS } from "@/lib/presence";
-import { type PeerDot, type SignalMsg } from "@/lib/types";
+import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 
 type Conn =
   | { kind: "idle" }
@@ -27,7 +34,12 @@ const CONNECT_TIMEOUT_MS = 25_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
-  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
+  const [session, _setSession] = useState<Session | null>(null);
+  const sessionRef = useRef<Session | null>(session);
+  const setSession = (s: Session) => {
+    sessionRef.current = s;
+    _setSession(s);
+  };
   const [peers, setPeers] = useState<PeerDot[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -57,6 +69,12 @@ export default function Home() {
   // accepted connection whose WebRTC link never opens.
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Send a signal as the current session (fire-and-forget).
+  function signal(toId: string, type: SignalType, payload?: string) {
+    const s = sessionRef.current;
+    if (s) void sendSignal(s, toId, type, payload);
+  }
+
   function showNotice(text: string) {
     setNotice(text);
     window.setTimeout(() => setNotice(null), 3500);
@@ -82,12 +100,12 @@ export default function Home() {
     // Tell the peer (and the server, which frees both of us) before tearing
     // down locally — otherwise we'd both stay marked busy.
     const abandon = (message: string) => {
-      void sendSignal(sessionId, peerId, "end");
+      signal(peerId, "end");
       teardown(message);
     };
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        void sendSignal(sessionId, peerId, type, payload);
+        signal(peerId, type, payload);
       },
       onChat: (text) => addMessage(false, text),
       onControl: (ctrl) => handleControl(ctrl),
@@ -149,13 +167,13 @@ export default function Home() {
   function requestConnection(peerId: string) {
     if (connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
-    void sendSignal(sessionId, peerId, "request");
+    signal(peerId, "request");
     pendingTimer.current = setTimeout(() => {
       if (
         connRef.current.kind === "requesting" &&
         connRef.current.peerId === peerId
       ) {
-        void sendSignal(sessionId, peerId, "end");
+        signal(peerId, "end");
         teardown("No answer.");
       }
     }, REQUEST_TIMEOUT_MS);
@@ -163,7 +181,7 @@ export default function Home() {
 
   function cancelRequest() {
     if (connRef.current.kind === "requesting") {
-      void sendSignal(sessionId, connRef.current.peerId, "end");
+      signal(connRef.current.peerId, "end");
     }
     teardown();
   }
@@ -172,20 +190,20 @@ export default function Home() {
     if (connRef.current.kind !== "incoming") return;
     const peerId = connRef.current.peerId;
     startPeer(peerId, false);
-    void sendSignal(sessionId, peerId, "accept");
+    signal(peerId, "accept");
     setConn({ kind: "connecting", peerId });
   }
 
   function declineIncoming() {
     if (connRef.current.kind !== "incoming") return;
-    void sendSignal(sessionId, connRef.current.peerId, "decline");
+    signal(connRef.current.peerId, "decline");
     setConn({ kind: "idle" });
   }
 
   function endConnection() {
     const c = connRef.current;
     if (c.kind === "connecting" || c.kind === "connected") {
-      void sendSignal(sessionId, c.peerId, "end");
+      signal(c.peerId, "end");
     }
     teardown();
   }
@@ -232,7 +250,7 @@ export default function Home() {
         if (connRef.current.kind === "idle") {
           setConn({ kind: "incoming", peerId: sig.fromId });
         } else {
-          void sendSignal(sessionId, sig.fromId, "decline");
+          signal(sig.fromId, "decline");
         }
         break;
       }
@@ -294,9 +312,7 @@ export default function Home() {
     if (connRef.current.kind !== "idle") {
       teardown("You were away too long, so the connection ended.");
     }
-    const id = crypto.randomUUID();
-    await join(id, myLocation.lat, myLocation.lng);
-    setSessionId(id);
+    setSession(await join(myLocation.lat, myLocation.lng));
   }
 
   const processSignalRef = useRef(processSignal);
@@ -307,23 +323,29 @@ export default function Home() {
   });
 
   useEffect(() => {
-    if (phase !== "live" || !sessionId) return;
+    if (phase !== "live" || !session) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const tick = async () => {
+      let delay = POLL_INTERVAL_MS;
       try {
-        const data = await poll(sessionId);
+        const data = await poll(session);
         if (!active) return;
-        if (!data.present) {
-          // Re-joining swaps sessionId, which restarts this effect.
-          await rejoinRef.current();
-          return;
-        }
         setPeers(data.peers);
         for (const s of data.signals) processSignalRef.current(s);
-      } catch {}
-      if (active) timer = setTimeout(tick, POLL_INTERVAL_MS);
+      } catch (err) {
+        if (active && err instanceof SessionExpiredError) {
+          try {
+            // Re-joining swaps the session, which restarts this effect.
+            await rejoinRef.current();
+            return;
+          } catch {
+            delay = 5_000; // e.g. rate limited — back off before retrying
+          }
+        }
+      }
+      if (active) timer = setTimeout(tick, delay);
     };
     tick();
 
@@ -331,22 +353,22 @@ export default function Home() {
       active = false;
       if (timer) clearTimeout(timer);
     };
-  }, [phase, sessionId]);
+  }, [phase, session]);
 
   useEffect(() => {
-    if (!sessionId || phase !== "live") return;
-    const onLeave = () => leave(sessionId);
+    if (!session || phase !== "live") return;
+    const onLeave = () => leave(session);
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);
     return () => {
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("beforeunload", onLeave);
     };
-  }, [sessionId, phase]);
+  }, [session, phase]);
 
   async function handleReady(lat: number, lng: number) {
     setMyLocation({ lat, lng });
-    await join(sessionId, lat, lng);
+    setSession(await join(lat, lng));
     setPhase("live");
   }
 

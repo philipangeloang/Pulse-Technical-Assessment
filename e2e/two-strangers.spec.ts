@@ -1,4 +1,5 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
+import { randomClientIp } from "./helpers";
 
 // The full Pulse happy path with two real browsers: both appear on the map,
 // one taps the other, they chat over the WebRTC data channel, upgrade to
@@ -15,6 +16,7 @@ async function openStranger(
   const context = await browser.newContext({
     geolocation,
     permissions: ["geolocation", "camera", "microphone"],
+    extraHTTPHeaders: { "x-forwarded-for": randomClientIp() },
   });
   const page = await context.newPage();
   // Fake timers that run in real time until paused — lets a test "freeze" the

@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { pair, unpair } from "@/lib/connections";
+import { authenticate, readToken, unauthorized } from "@/lib/auth";
+import { isSessionId } from "@/lib/validate";
 import type { SignalType } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -18,10 +20,16 @@ const VALID_TYPES: SignalType[] = [
 
 const MAX_PAYLOAD = 64 * 1024; // SDP/ICE are small; cap to be safe.
 
-// POST /api/signal — body { fromId, toId, type, payload? }
-// Drops one message into the recipient's mailbox. Also manages the pairing
-// (Presence.peerId) so a user can only be in one connection at a time.
+// POST /api/signal (Authorization: Bearer <token>) — body { toId, type,
+// payload? }. Drops one message from the caller into the recipient's
+// mailbox. The sender is always the token holder; there is no fromId to
+// spoof. Also manages the pairing (Presence.peerId) so a user can only be in
+// one connection at a time.
 export async function POST(request: NextRequest) {
+  const me = await authenticate(readToken(request));
+  if (!me) return unauthorized();
+  const fromId = me.id;
+
   let body: unknown;
   try {
     body = await request.json();
@@ -29,13 +37,10 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: "invalid body" }, { status: 400 });
   }
 
-  const { fromId, toId, type, payload } = (body ?? {}) as Record<
-    string,
-    unknown
-  >;
+  const { toId, type, payload } = (body ?? {}) as Record<string, unknown>;
 
-  if (typeof fromId !== "string" || typeof toId !== "string") {
-    return Response.json({ error: "invalid ids" }, { status: 400 });
+  if (!isSessionId(toId) || toId === fromId) {
+    return Response.json({ error: "invalid toId" }, { status: 400 });
   }
   if (typeof type !== "string" || !VALID_TYPES.includes(type as SignalType)) {
     return Response.json({ error: "invalid type" }, { status: 400 });

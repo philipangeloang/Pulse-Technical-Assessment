@@ -27,9 +27,6 @@ export interface SignalMsg {
 }
 
 export interface PollResponse {
-  // False when the caller has no presence row (reaped while its tab was
-  // frozen/backgrounded, or it sent a leave and was restored from bfcache).
-  present: boolean;
   peers: PeerDot[];
   signals: SignalMsg[];
 }

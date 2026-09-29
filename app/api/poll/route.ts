@@ -1,33 +1,27 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { releasePartnersOf } from "@/lib/connections";
+import { authenticateAndTouch, readToken, unauthorized } from "@/lib/auth";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/poll?id= — the single endpoint that drives the live map.
-// It (1) heartbeats the caller, (2) reaps stale presence + orphan signals,
-// (3) returns the filtered online peers, and (4) drains this user's mailbox.
+// GET /api/poll (Authorization: Bearer <token>) — the single endpoint that
+// drives the live map. It (1) authenticates + heartbeats the caller,
+// (2) reaps stale presence + orphan signals, (3) returns the filtered online
+// peers, and (4) drains this user's mailbox.
 export async function GET(request: NextRequest) {
-  const params = request.nextUrl.searchParams;
-  const id = params.get("id");
-
-  if (!id) {
-    return Response.json({ error: "missing id" }, { status: 400 });
-  }
+  // 1) Authenticate + heartbeat. 401 = unknown token or already reaped; the
+  // client re-joins as a new session when it sees that.
+  const me = await authenticateAndTouch(readToken(request));
+  if (!me) return unauthorized();
+  const id = me.id;
 
   const now = Date.now();
   const staleCutoff = new Date(now - STALE_MS);
   const signalCutoff = new Date(now - SIGNAL_TTL_MS);
-
-  // 1) Heartbeat — refresh lastSeen for the caller only. A count of 0 means
-  // the caller was already reaped; the client re-joins when it sees that.
-  const heartbeat = await prisma.presence.updateMany({
-    where: { id },
-    data: { lastSeen: new Date(now) },
-  });
 
   // 2) Reap stale presence rows and orphaned signals (independent deletes —
   // no atomicity needed, and avoids transactions over a PgBouncer pooler).
@@ -66,7 +60,6 @@ export async function GET(request: NextRequest) {
   }
 
   const response: PollResponse = {
-    present: heartbeat.count > 0,
     peers: peers.map((p) => ({
       id: p.id,
       lat: p.lat,
