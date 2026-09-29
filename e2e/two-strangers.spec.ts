@@ -10,13 +10,16 @@ const HONG_KONG = { latitude: 22.3193, longitude: 114.1694 };
 async function openStranger(
   browser: Browser,
   geolocation: { latitude: number; longitude: number },
-  { unreachable = false } = {},
+  { unreachable = false, controllableClock = false } = {},
 ): Promise<Page> {
   const context = await browser.newContext({
     geolocation,
     permissions: ["geolocation", "camera", "microphone"],
   });
   const page = await context.newPage();
+  // Fake timers that run in real time until paused — lets a test "freeze" the
+  // tab the way a backgrounded or suspended browser does.
+  if (controllableClock) await page.clock.install();
   if (unreachable) {
     // Simulate a network where no ICE path works: drop all remote candidates.
     await page.addInitScript(() => {
@@ -125,6 +128,32 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await alice.close({ runBeforeUnload: true });
+});
+
+test("a tab frozen in the background comes back on the map", async ({
+  browser,
+}) => {
+  const alice = await openStranger(browser, MANILA);
+  const bob = await openStranger(browser, HONG_KONG, {
+    controllableClock: true,
+  });
+  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
+
+  // Freeze bob's tab the way Chrome/mobile browsers do for background tabs:
+  // no timers run, so no heartbeats, and the server reaps him.
+  await bob.clock.pauseAt(Date.now() + 1000);
+  await expect(alice.locator(".pulse-dot")).toHaveCount(0, { timeout: 30_000 });
+
+  await bob.clock.resume();
+  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
+  await expect(bob.locator(".pulse-dot")).toHaveCount(1);
+
+  // And he's reachable again, not just visible.
+  await alice.locator(".pulse-dot").click();
+  await expect(bob.getByText(/wants to connect/i)).toBeVisible();
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
 });
 
 test("a connection that can't be established frees both users", async ({

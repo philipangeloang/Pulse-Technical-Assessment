@@ -27,7 +27,7 @@ const CONNECT_TIMEOUT_MS = 25_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [peers, setPeers] = useState<PeerDot[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -285,9 +285,25 @@ export default function Home() {
     }
   }
 
+  // The server reaped us (tab frozen/backgrounded past STALE_MS, or restored
+  // from bfcache after pagehide sent a leave). Come back as a *new* session:
+  // a fresh id gets a fresh privacy offset that can't be linked to — and
+  // averaged with — the old one to narrow down our real location.
+  async function rejoin() {
+    if (!myLocation) return;
+    if (connRef.current.kind !== "idle") {
+      teardown("You were away too long, so the connection ended.");
+    }
+    const id = crypto.randomUUID();
+    await join(id, myLocation.lat, myLocation.lng);
+    setSessionId(id);
+  }
+
   const processSignalRef = useRef(processSignal);
+  const rejoinRef = useRef(rejoin);
   useEffect(() => {
     processSignalRef.current = processSignal;
+    rejoinRef.current = rejoin;
   });
 
   useEffect(() => {
@@ -299,6 +315,11 @@ export default function Home() {
       try {
         const data = await poll(sessionId);
         if (!active) return;
+        if (!data.present) {
+          // Re-joining swaps sessionId, which restarts this effect.
+          await rejoinRef.current();
+          return;
+        }
         setPeers(data.peers);
         for (const s of data.signals) processSignalRef.current(s);
       } catch {}
