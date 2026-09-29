@@ -14,7 +14,7 @@ datasource db {
 model Presence {
   id        String   @id @default(uuid()) // public session id (server-assigned)
   tokenHash String   @unique // sha256 of the session's secret bearer token
-  lat       Float // ALREADY privacy-offset coords (raw is never stored)
+  lat       Float // privacy-offset in the browser (raw never leaves the device)
   lng       Float
   // Session id of the current connection partner; null = available.
   // Knowing *who* the partner is (not just "busy") lets leave/reap/end

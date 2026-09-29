@@ -42,6 +42,19 @@ async function openStranger(
   return page;
 }
 
+type LatLng = { latitude: number; longitude: number };
+
+// Great-circle distance (haversine).
+function distanceKm(a: LatLng, b: LatLng): number {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(b.latitude - a.latitude);
+  const dLng = rad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
 function cspViolations(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __csp: string[] }).__csp);
 }
@@ -148,6 +161,25 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await alice.close({ runBeforeUnload: true });
+});
+
+test("the raw location never leaves the browser", async ({ browser }) => {
+  const context = await browser.newContext({
+    geolocation: MANILA,
+    permissions: ["geolocation"],
+    extraHTTPHeaders: { "x-forwarded-for": randomClientIp() },
+  });
+  const page = await context.newPage();
+  await page.goto("/");
+  const joinRequest = page.waitForRequest((r) => r.url().endsWith("/api/join"));
+  await page.getByRole("button", { name: /enter pulse/i }).click();
+  const sent = (await joinRequest).postDataJSON();
+
+  const km = distanceKm(MANILA, { latitude: sent.lat, longitude: sent.lng });
+  expect(km).toBeGreaterThan(0.95);
+  expect(km).toBeLessThan(3.05);
+
+  await page.close({ runBeforeUnload: true });
 });
 
 test("a tab frozen in the background comes back on the map", async ({

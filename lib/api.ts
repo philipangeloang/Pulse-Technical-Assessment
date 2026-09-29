@@ -1,5 +1,6 @@
 // Client-side helpers for talking to the coordination API.
 import type { PollResponse, SignalType } from "@/lib/types";
+import { applyPrivacyOffset } from "@/lib/geo";
 
 // A live session: `id` is public (others see it on your dot), `token` is the
 // secret credential for every other call. Kept in memory only.
@@ -13,7 +14,12 @@ export class SessionExpiredError extends Error {}
 
 const authHeaders = (s: Session) => ({ Authorization: `Bearer ${s.token}` });
 
-export async function join(lat: number, lng: number): Promise<Session> {
+// Starts a new session at the user's real location. The 1–3 km privacy
+// offset is applied here, in the browser, so the raw location never leaves
+// the device. Every join (including re-joins) draws a fresh offset for a
+// fresh, unlinkable session id.
+export async function join(rawLat: number, rawLng: number): Promise<Session> {
+  const { lat, lng } = applyPrivacyOffset(rawLat, rawLng);
   const res = await fetch("/api/join", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
