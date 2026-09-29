@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { pair, unpair } from "@/lib/connections";
 import type { SignalType } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -18,8 +19,8 @@ const VALID_TYPES: SignalType[] = [
 const MAX_PAYLOAD = 64 * 1024; // SDP/ICE are small; cap to be safe.
 
 // POST /api/signal — body { fromId, toId, type, payload? }
-// Drops one message into the recipient's mailbox. Also manages the `busy`
-// flag so a user can only be in one connection at a time.
+// Drops one message into the recipient's mailbox. Also manages the pairing
+// (Presence.peerId) so a user can only be in one connection at a time.
 export async function POST(request: NextRequest) {
   let body: unknown;
   try {
@@ -55,32 +56,28 @@ export async function POST(request: NextRequest) {
   if (signalType === "request") {
     const target = await prisma.presence.findUnique({
       where: { id: toId },
-      select: { busy: true },
+      select: { peerId: true },
     });
-    if (!target) {
-      // Target went offline — tell the initiator it was declined.
-      await sendDecline(toId, fromId);
-      return Response.json({ ok: true, autoDeclined: true });
-    }
-    if (target.busy) {
+    if (!target || target.peerId !== null) {
+      // Target went offline or is busy — tell the initiator it was declined.
       await sendDecline(toId, fromId);
       return Response.json({ ok: true, autoDeclined: true });
     }
   }
 
-  // Busy transitions:
-  // - accept: the connection is now active → mark BOTH peers busy.
-  // - decline/end: free both peers.
+  // Connection transitions:
+  // - accept: pair both peers (fails if either vanished or got busy meanwhile,
+  //   in which case the acceptor is told the connection ended).
+  // - decline/end: release the pair.
   if (signalType === "accept") {
-    await prisma.presence.updateMany({
-      where: { id: { in: [fromId, toId] } },
-      data: { busy: true },
-    });
-  } else if (signalType === "decline") {
-    await prisma.presence.updateMany({
-      where: { id: { in: [fromId, toId] } },
-      data: { busy: false },
-    });
+    if (!(await pair(fromId, toId))) {
+      await prisma.signal.create({
+        data: { fromId: toId, toId: fromId, type: "end", payload: null },
+      });
+      return Response.json({ ok: false, error: "peer unavailable" });
+    }
+  } else if (signalType === "decline" || signalType === "end") {
+    await unpair(fromId, toId);
   }
 
   await prisma.signal.create({

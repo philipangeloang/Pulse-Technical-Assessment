@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { releasePartnersOf } from "@/lib/connections";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import type { PollResponse } from "@/lib/types";
 
@@ -29,7 +30,17 @@ export async function GET(request: NextRequest) {
 
   // 2) Reap stale presence rows and orphaned signals (independent deletes —
   // no atomicity needed, and avoids transactions over a PgBouncer pooler).
-  await prisma.presence.deleteMany({ where: { lastSeen: { lt: staleCutoff } } });
+  // Anyone reaped mid-connection frees (and notifies) their partner.
+  const stale = await prisma.presence.findMany({
+    where: { lastSeen: { lt: staleCutoff } },
+    select: { id: true, peerId: true },
+  });
+  if (stale.length > 0) {
+    await prisma.presence.deleteMany({
+      where: { id: { in: stale.map((s) => s.id) }, lastSeen: { lt: staleCutoff } },
+    });
+    await releasePartnersOf(stale);
+  }
   await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
 
   // 3) Online peers, excluding self.
@@ -38,7 +49,7 @@ export async function GET(request: NextRequest) {
       id: { not: id },
       lastSeen: { gte: staleCutoff },
     },
-    select: { id: true, lat: true, lng: true, busy: true },
+    select: { id: true, lat: true, lng: true, peerId: true },
   });
 
   // 4) Drain this user's mailbox: read, then delete exactly what we read so a
@@ -58,7 +69,7 @@ export async function GET(request: NextRequest) {
       id: p.id,
       lat: p.lat,
       lng: p.lng,
-      busy: p.busy,
+      busy: p.peerId !== null,
     })),
     signals: inbox.map((s) => ({
       id: s.id,

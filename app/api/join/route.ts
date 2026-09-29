@@ -33,7 +33,6 @@ export async function POST(request: NextRequest) {
       id,
       lat: offset.lat,
       lng: offset.lng,
-      busy: false,
       lastSeen: new Date(),
     },
     update: {
