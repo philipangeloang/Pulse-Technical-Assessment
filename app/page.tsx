@@ -69,10 +69,14 @@ export default function Home() {
   // accepted connection whose WebRTC link never opens.
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Send a signal as the current session (fire-and-forget).
-  function signal(toId: string, type: SignalType, payload?: string) {
+  // Send a signal as the current session. Resolves false if it was refused.
+  function signal(
+    toId: string,
+    type: SignalType,
+    payload?: string,
+  ): Promise<boolean> {
     const s = sessionRef.current;
-    if (s) void sendSignal(s, toId, type, payload);
+    return s ? sendSignal(s, toId, type, payload) : Promise.resolve(false);
   }
 
   function showNotice(text: string) {
@@ -100,12 +104,12 @@ export default function Home() {
     // Tell the peer (and the server, which frees both of us) before tearing
     // down locally — otherwise we'd both stay marked busy.
     const abandon = (message: string) => {
-      signal(peerId, "end");
+      void signal(peerId, "end");
       teardown(message);
     };
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        signal(peerId, type, payload);
+        void signal(peerId, type, payload);
       },
       onChat: (text) => addMessage(false, text),
       onControl: (ctrl) => handleControl(ctrl),
@@ -167,13 +171,13 @@ export default function Home() {
   function requestConnection(peerId: string) {
     if (connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
-    signal(peerId, "request");
+    void signal(peerId, "request");
     pendingTimer.current = setTimeout(() => {
       if (
         connRef.current.kind === "requesting" &&
         connRef.current.peerId === peerId
       ) {
-        signal(peerId, "end");
+        void signal(peerId, "end");
         teardown("No answer.");
       }
     }, REQUEST_TIMEOUT_MS);
@@ -181,7 +185,7 @@ export default function Home() {
 
   function cancelRequest() {
     if (connRef.current.kind === "requesting") {
-      signal(connRef.current.peerId, "end");
+      void signal(connRef.current.peerId, "end");
     }
     teardown();
   }
@@ -190,20 +194,27 @@ export default function Home() {
     if (connRef.current.kind !== "incoming") return;
     const peerId = connRef.current.peerId;
     startPeer(peerId, false);
-    signal(peerId, "accept");
     setConn({ kind: "connecting", peerId });
+    void signal(peerId, "accept").then((ok) => {
+      // The request was withdrawn (cancelled, timed out, or they left) just
+      // as we accepted.
+      const c = connRef.current;
+      if (!ok && c.kind === "connecting" && c.peerId === peerId) {
+        teardown("That stranger is no longer available.");
+      }
+    });
   }
 
   function declineIncoming() {
     if (connRef.current.kind !== "incoming") return;
-    signal(connRef.current.peerId, "decline");
+    void signal(connRef.current.peerId, "decline");
     setConn({ kind: "idle" });
   }
 
   function endConnection() {
     const c = connRef.current;
     if (c.kind === "connecting" || c.kind === "connected") {
-      signal(c.peerId, "end");
+      void signal(c.peerId, "end");
     }
     teardown();
   }
@@ -250,7 +261,7 @@ export default function Home() {
         if (connRef.current.kind === "idle") {
           setConn({ kind: "incoming", peerId: sig.fromId });
         } else {
-          signal(sig.fromId, "decline");
+          void signal(sig.fromId, "decline");
         }
         break;
       }

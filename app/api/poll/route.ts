@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   // Anyone reaped mid-connection frees (and notifies) their partner.
   const stale = await prisma.presence.findMany({
     where: { lastSeen: { lt: staleCutoff } },
-    select: { id: true, peerId: true },
+    select: { id: true, peerId: true, pendingTo: true },
   });
   if (stale.length > 0) {
     await prisma.presence.deleteMany({

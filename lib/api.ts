@@ -33,17 +33,26 @@ export async function poll(session: Session): Promise<PollResponse> {
   return res.json();
 }
 
+// Resolves false if the server refused the signal (e.g. accepting a request
+// that was cancelled a moment ago) or it couldn't be sent.
 export async function sendSignal(
   session: Session,
   toId: string,
   type: SignalType,
   payload?: string,
-): Promise<void> {
-  await fetch("/api/signal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(session) },
-    body: JSON.stringify({ toId, type, payload }),
-  });
+): Promise<boolean> {
+  try {
+    const res = await fetch("/api/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(session) },
+      body: JSON.stringify({ toId, type, payload }),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body.ok !== false;
+  } catch {
+    return false;
+  }
 }
 
 // Fire-and-forget leave that survives the tab closing. sendBeacon can't set

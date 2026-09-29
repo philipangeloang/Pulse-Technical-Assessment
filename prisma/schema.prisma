@@ -20,9 +20,13 @@ model Presence {
   // Knowing *who* the partner is (not just "busy") lets leave/reap/end
   // free the other side too.
   peerId    String?
+  // Session id this user has an outstanding connection request to. Only
+  // that user may accept/decline it; the server enforces the handshake.
+  pendingTo String?
   lastSeen  DateTime
 
   @@index([lastSeen])
+  @@index([pendingTo])
 }
 
 model Signal {

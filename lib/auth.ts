@@ -36,7 +36,7 @@ export async function authenticate(token: string | null) {
   if (!token) return null;
   return prisma.presence.findUnique({
     where: { tokenHash: hashToken(token) },
-    select: { id: true, peerId: true },
+    select: { id: true, peerId: true, pendingTo: true },
   });
 }
 
@@ -46,7 +46,7 @@ export async function authenticateAndTouch(token: string | null) {
   const rows = await prisma.presence.updateManyAndReturn({
     where: { tokenHash: hashToken(token) },
     data: { lastSeen: new Date() },
-    select: { id: true, peerId: true },
+    select: { id: true, peerId: true, pendingTo: true },
   });
   return rows[0] ?? null;
 }
