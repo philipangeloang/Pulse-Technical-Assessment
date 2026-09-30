@@ -1,4 +1,10 @@
-import { test, expect, type Browser, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Browser,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { randomClientIp } from "./helpers";
 
 // The full Pulse happy path with two real browsers: both appear on the map,
@@ -7,6 +13,33 @@ import { randomClientIp } from "./helpers";
 
 const MANILA = { latitude: 14.5995, longitude: 120.9842 };
 const HONG_KONG = { latitude: 22.3193, longitude: 114.1694 };
+
+// The session id each page joined as (updated when it re-joins), read from
+// its own /api/join response. Tests look up *that* stranger's dot, so they
+// hold even when real people are online on the same database.
+const sessionIds = new WeakMap<Page, string>();
+
+function trackSession(page: Page) {
+  page.on("response", async (res) => {
+    if (res.url().endsWith("/api/join") && res.ok()) {
+      try {
+        sessionIds.set(page, (await res.json()).id);
+      } catch {
+        // page closed mid-read
+      }
+    }
+  });
+}
+
+async function sessionId(page: Page): Promise<string> {
+  await expect.poll(() => sessionIds.get(page)).toBeTruthy();
+  return sessionIds.get(page)!;
+}
+
+// `target`'s dot as it appears on `viewer`'s map.
+async function dotOf(viewer: Page, target: Page): Promise<Locator> {
+  return viewer.locator(`.pulse-dot[data-peer-id="${await sessionId(target)}"]`);
+}
 
 async function openStranger(
   browser: Browser,
@@ -52,6 +85,7 @@ async function openStranger(
       RTCPeerConnection.prototype.addIceCandidate = async () => {};
     });
   }
+  trackSession(page);
   await page.goto("/");
   await page.getByRole("button", { name: /enter pulse/i }).click();
   return page;
@@ -96,12 +130,12 @@ test("two strangers can find each other, chat, video call and leave", async ({
   const bob = await openStranger(browser, HONG_KONG);
 
   await test.step("each sees the other's dot", async () => {
-    await expect(alice.locator(".pulse-dot")).toHaveCount(1);
-    await expect(bob.locator(".pulse-dot")).toHaveCount(1);
+    await expect(await dotOf(alice, bob)).toHaveCount(1);
+    await expect(await dotOf(bob, alice)).toHaveCount(1);
   });
 
   await test.step("alice taps bob, bob accepts, both connect", async () => {
-    await alice.locator(".pulse-dot").click();
+    await (await dotOf(alice, bob)).click();
     await expect(bob.getByText(/wants to connect/i)).toBeVisible();
     await bob.getByRole("button", { name: "Accept" }).click();
     await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
@@ -158,12 +192,12 @@ test("two strangers can find each other, chat, video call and leave", async ({
     await bob.getByRole("button", { name: "End", exact: true }).click();
     await expect(alice.getByPlaceholder(/type a message/i)).toBeHidden();
     // Neither dot should stay dimmed as busy.
-    await expect(alice.locator(".pulse-dot")).toHaveCSS("opacity", "1");
-    await expect(bob.locator(".pulse-dot")).toHaveCSS("opacity", "1");
+    await expect(await dotOf(alice, bob)).toHaveCSS("opacity", "1");
+    await expect(await dotOf(bob, alice)).toHaveCSS("opacity", "1");
   });
 
   await test.step("they can connect a second time", async () => {
-    await bob.locator(".pulse-dot").click();
+    await (await dotOf(bob, alice)).click();
     await expect(alice.getByText(/wants to connect/i)).toBeVisible();
     await alice.getByRole("button", { name: "Accept" }).click();
     await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
@@ -172,7 +206,7 @@ test("two strangers can find each other, chat, video call and leave", async ({
   await test.step("closing a tab ends the chat and removes the dot", async () => {
     await bob.context().close();
     await expect(alice.getByPlaceholder(/type a message/i)).toBeHidden();
-    await expect(alice.locator(".pulse-dot")).toHaveCount(0);
+    await expect(await dotOf(alice, bob)).toHaveCount(0);
   });
 
   await alice.close({ runBeforeUnload: true });
@@ -182,8 +216,7 @@ test("a hostile peer can't flood or bloat the chat", async ({ browser }) => {
   const mallory = await openStranger(browser, MANILA, { hostile: true });
   const bob = await openStranger(browser, HONG_KONG);
 
-  await expect(mallory.locator(".pulse-dot")).toHaveCount(1);
-  await mallory.locator(".pulse-dot").click();
+  await (await dotOf(mallory, bob)).click();
   await bob.getByRole("button", { name: "Accept" }).click();
   await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
 
@@ -231,19 +264,22 @@ test("a tab frozen in the background comes back on the map", async ({
   const bob = await openStranger(browser, HONG_KONG, {
     controllableClock: true,
   });
-  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
+  const firstId = await sessionId(bob);
+  await expect(await dotOf(alice, bob)).toHaveCount(1);
 
   // Freeze bob's tab the way Chrome/mobile browsers do for background tabs:
   // no timers run, so no heartbeats, and the server reaps him.
   await bob.clock.pauseAt(Date.now() + 1000);
-  await expect(alice.locator(".pulse-dot")).toHaveCount(0, { timeout: 30_000 });
+  await expect(await dotOf(alice, bob)).toHaveCount(0, { timeout: 30_000 });
 
   await bob.clock.resume();
-  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
-  await expect(bob.locator(".pulse-dot")).toHaveCount(1);
+  // He comes back as a new session (fresh id, fresh privacy offset).
+  await expect.poll(() => sessionIds.get(bob)).not.toBe(firstId);
+  await expect(await dotOf(alice, bob)).toHaveCount(1);
+  await expect(await dotOf(bob, alice)).toHaveCount(1);
 
   // And he's reachable again, not just visible.
-  await alice.locator(".pulse-dot").click();
+  await (await dotOf(alice, bob)).click();
   await expect(bob.getByText(/wants to connect/i)).toBeVisible();
 
   await alice.close({ runBeforeUnload: true });
@@ -256,8 +292,7 @@ test("a connection that can't be established frees both users", async ({
   const alice = await openStranger(browser, MANILA, { unreachable: true });
   const bob = await openStranger(browser, HONG_KONG, { unreachable: true });
 
-  await expect(alice.locator(".pulse-dot")).toHaveCount(1);
-  await alice.locator(".pulse-dot").click();
+  await (await dotOf(alice, bob)).click();
   await bob.getByRole("button", { name: "Accept" }).click();
 
   // Whichever side times out first gives up and tells the other; both get a
@@ -272,8 +307,8 @@ test("a connection that can't be established frees both users", async ({
   await expect(alice.getByText("Connecting…", { exact: true })).toBeHidden();
   await expect(bob.getByText("Connecting…", { exact: true })).toBeHidden();
   // Neither is left marked busy on the server.
-  await expect(alice.locator(".pulse-dot")).toHaveCSS("opacity", "1");
-  await expect(bob.locator(".pulse-dot")).toHaveCSS("opacity", "1");
+  await expect(await dotOf(alice, bob)).toHaveCSS("opacity", "1");
+  await expect(await dotOf(bob, alice)).toHaveCSS("opacity", "1");
 
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
