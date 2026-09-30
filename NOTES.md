@@ -28,6 +28,69 @@ written to fail before each fix.
 - `npm run test:e2e` — set `E2E_CHANNEL=chrome` to use an installed Chrome instead of
   downloading Playwright's Chromium.
 
+## Phase 2 — Make it good
+
+**Direction: "Midnight Observatory."** Looking down at Earth at night — calm and
+intimate rather than a busy social app. One surface material (frosted glass), one warm
+accent (ember orange), a serif for the human moments (Instrument Serif) and Geist for
+the interface. Design spec: `docs/superpowers/specs/`.
+
+- **A globe, not a flat map.** 3D globe in space with atmosphere and stars, tinted to
+  the palette (navy seas, quiet labels). It spins slowly behind the entry card and
+  flies down to you when you drop in.
+- **Strangers are embers with a heartbeat;** busy ones dim and stop beating. Hover
+  shows one line about them (their local time and sky).
+- **Tap → card → Say hi.** The original sent a request the instant you touched a dot —
+  easy to do by accident, especially on a phone. Now a card shows their local time,
+  sky and distance, and you choose to say hi; waiting shows a 30 s countdown ring.
+- **Honest privacy UI.** Your marker sits at your real location (only on your screen)
+  inside the faint 1–3 km ring your public dot is placed in, with a hollow marker where
+  others actually see you.
+- **Chat as a glass sheet** — side sheet on desktop, bottom sheet on phones (safe-area
+  aware), timestamps, long words wrap, and video no longer covers the conversation.
+- **States and copy for everything:** empty globe ("open a second window to meet
+  yourself"), a Reconnecting pill, toasts for every outcome.
+- **Restraint:** CSS-only motion, `prefers-reduced-motion` stops the spin and
+  animations, and it all runs under the strict CSP with zero violations.
+
+Verified by looking, not just by tests: I screenshot every screen while building. That
+caught two real bugs the tests couldn't — the dev server serving stale CSS, and
+Lightning CSS emitting only `-webkit-backdrop-filter` (so the glass never frosted in
+Chrome).
+
+## Phase 4 — Make it better
+
+Two features: one that makes Pulse **safe**, one that makes it feel **alive**.
+
+**Soft Reveal (safety).** The worst thing about video with strangers is unwanted
+exposure. So video starts **frosted at the source**: the camera is drawn to a canvas,
+shrunk to 32 px and scaled back up, and the *canvas* stream is what's sent. The other
+person never receives a clear frame until you tap **Reveal me** — even a modified client
+can't un-frost what never left your device. Consent runs both ways: when they reveal,
+you're told, but they stay blurred on your side until you tap **Show them**. Every call
+starts frosted again. Plus **Skip & block**: ends the chat, hides them and silently
+declines their requests for the rest of the visit.
+
+The e2e test proves the enforcement rather than the UI: it measures edge detail
+(variance of the Laplacian) in the frames the **receiver decodes** — ~2–5 while frosted,
+~16–26 once revealed, back to frosted after a restart.
+
+**Living Globe (alive).** The globe shows the real **day/night terminator** with
+civil, nautical and astronomical twilight bands (solar geometry computed every minute,
+unit-tested against solstice/equinox cases), each stranger's **local time and sky**
+("4:12 AM · before dawn"), how many strangers are **under the night sky**, and a
+**flare** whenever a dot starts a conversation. It's computed in the browser from data
+that was already public — nothing new is sent or stored.
+
+**Why these two:** they show up in exactly the test reviewers run (two windows →
+connect → video), and they answer the product's two real questions — *why would I open
+this?* (it feels like a living planet: someone is awake somewhere) and *why would I
+trust it?* (you control what you show and what you see).
+
+**Next, with more time:** a TURN relay (plus relay-only mode to hide IPs from peers),
+server-side reports with rate-limited consequences, "golden hour" matching (meet someone
+where the sun is rising), and a lighter globe mode for low-end phones.
+
 ## Phase 3 — Make it secure
 
 **Threat model.** Anonymous users, no accounts. The attacker knows everything the API
@@ -60,5 +123,5 @@ API, then wrote `e2e/api-security.spec.ts` (red first) as the regression suite.
   Mapbox dashboard.
 - **No report / block mechanism yet** for abusive strangers.
 
-Tests: `npm run test:e2e` runs the security suite and the two-browser flows; all 16 pass
-against both `next dev` and a production build.
+Tests: `npm test` (35 unit tests) and `npm run test:e2e` (the API security suite plus
+two-browser flows — 23 tests) all pass against both `next dev` and a production build.

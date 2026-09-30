@@ -519,3 +519,18 @@ test("a denied camera declines the video cleanly and keeps the chat", async ({ b
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
 });
+
+test("living globe: night is drawn and strangers show their local time and sky", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await expect(alice.locator("[data-night-bands='4']")).toHaveCount(1);
+  // (Counts aren't exact: real people may be online on the same database.)
+  await expect(alice.getByText(/\d+ strangers? awake · \d+ under the night sky/)).toBeVisible();
+  await (await dotOf(alice, bob)).click();
+  const card = alice.getByRole("region", { name: "Selected stranger" });
+  await expect(card).toContainText(/\d{1,2}:\d{2} [AP]M/);
+  await expect(card).toContainText(/night|before dawn|dawn|golden hour|daytime|dusk|late dusk/i);
+  await expect(card).toContainText(/~1,100 km away/);
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
