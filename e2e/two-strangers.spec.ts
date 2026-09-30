@@ -610,3 +610,65 @@ test("the camera is released if video is double-accepted or cancelled mid-start"
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
 });
+
+async function mapCenter(page: Page): Promise<{ lng: number; lat: number }> {
+  const raw = await page.locator("[data-center]").getAttribute("data-center");
+  const [lng, lat] = (raw ?? "NaN,NaN").split(",").map(Number);
+  return { lng, lat };
+}
+
+test("explore: jump to a region, back to yourself, or to a random free stranger", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await expect(await dotOf(alice, bob)).toHaveCount(1);
+
+  await alice.getByRole("button", { name: "Explore" }).click();
+  await expect(alice.getByRole("menuitem", { name: /Oceania/ })).toContainText(/[1-9]\d* awake/);
+  await alice.getByRole("menuitem", { name: /Europe/ }).click();
+  await expect
+    .poll(async () => {
+      const c = await mapCenter(alice);
+      return c.lng > -25 && c.lng < 45 && c.lat > 35 && c.lat < 72;
+    }, { timeout: 15_000 })
+    .toBe(true);
+
+  await alice.getByRole("button", { name: "Explore" }).click();
+  await alice.getByRole("menuitem", { name: "Back to me" }).click();
+  await expect
+    .poll(async () => Math.abs((await mapCenter(alice)).lng - PAPEETE.longitude), { timeout: 15_000 })
+    .toBeLessThan(5);
+
+  await alice.getByRole("button", { name: "Explore" }).click();
+  await alice.getByRole("menuitem", { name: "Surprise me" }).click();
+  await expect(alice.getByRole("region", { name: "Selected stranger" })).toBeVisible();
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("themes: switch the look, keep the globe's layers, remember the choice", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  await expect(alice.locator("[data-map-style='midnight']")).toHaveCount(1);
+
+  await alice.getByRole("button", { name: "Theme" }).click();
+  await alice.getByRole("menuitemradio", { name: /Aurora/ }).click();
+  await expect(alice.locator("html")).toHaveAttribute("data-theme", "aurora");
+  await expect(alice.locator("[data-map-style='aurora']")).toHaveCount(1);
+  await expect
+    .poll(() =>
+      alice.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--color-ember").trim(),
+      ),
+    )
+    .toBe("#4ff3c4");
+
+  await alice.getByRole("button", { name: "Theme" }).click();
+  await alice.getByRole("menuitemradio", { name: /Blue Marble/ }).click();
+  await expect(alice.locator("[data-map-style='blue-marble']")).toHaveCount(1, { timeout: 30_000 });
+  expect(await cspViolations(alice)).toEqual([]);
+
+  await alice.reload();
+  await expect(alice.locator("html")).toHaveAttribute("data-theme", "blue-marble");
+
+  await alice.close({ runBeforeUnload: true });
+});

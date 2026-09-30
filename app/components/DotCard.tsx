@@ -43,12 +43,11 @@ export default function DotCard({
           <svg className="countdown h-12 w-12 shrink-0 -rotate-90" viewBox="0 0 40 40" aria-hidden>
             <circle cx="20" cy="20" r="18" fill="none" stroke="rgb(255 255 255 / 0.1)" strokeWidth="3" />
             <circle
-              className="progress"
               cx="20"
               cy="20"
               r="18"
               fill="none"
-              stroke="#ff8a5c"
+              className="progress stroke-ember"
               strokeWidth="3"
               strokeLinecap="round"
               style={{ animationDuration: `${REQUEST_TIMEOUT_MS}ms` }}

@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "playwright-report/**",
     "test-results/**",
+    // Claude Code worktrees are separate checkouts, not part of this tree.
+    ".claude/**",
   ]),
   {
     // Playwright fixtures receive a callback named `use`, which the React

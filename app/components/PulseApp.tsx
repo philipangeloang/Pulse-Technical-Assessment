@@ -6,7 +6,8 @@ import Hud from "./Hud";
 import DotCard from "./DotCard";
 import IncomingCall from "./IncomingCall";
 import { Video } from "lucide-react";
-import WorldMap, { type MePosition } from "./WorldMap";
+import WorldMap, { type FlyRequest, type MePosition } from "./WorldMap";
+import { ExploreMenu, ThemeMenu } from "./MapMenus";
 import ConnectionPrompt from "./ConnectionPrompt";
 import ChatSheet, { type ChatMessage } from "./ChatSheet";
 import VideoStage from "./VideoStage";
@@ -27,6 +28,9 @@ import {
 } from "@/lib/webrtc";
 import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "@/lib/presence";
 import { loadTimeZones } from "@/lib/localtime";
+import { countByRegion, type Region } from "@/lib/regions";
+import { themeById } from "@/lib/themes";
+import { setThemeId, useThemeId } from "@/lib/theme-store";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 
 type Conn =
@@ -77,6 +81,10 @@ export default function PulseApp() {
   const blockedRef = useRef<Set<string>>(new Set());
   const [blocked, setBlocked] = useState<ReadonlySet<string>>(new Set());
   const [reconnecting, setReconnecting] = useState(false);
+  const themeId = useThemeId();
+  const theme = themeById(themeId);
+  const [flyTo, setFlyTo] = useState<FlyRequest | null>(null);
+  const flyKey = useRef(0);
   const pollFailures = useRef(0);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
@@ -487,6 +495,39 @@ export default function PulseApp() {
     setPhase("live");
   }
 
+  // The theme's accents are CSS variables on <html>; data-theme is there for
+  // the few theme-specific rules (e.g. Daybreak's darker glass).
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = theme.id;
+    root.style.setProperty("--color-ember", theme.colors.ember);
+    root.style.setProperty("--color-glow", theme.colors.glow);
+  }, [theme]);
+
+  function fly(center: [number, number], zoom: number) {
+    setFlyTo({ key: ++flyKey.current, center, zoom });
+  }
+
+  function exploreRegion(region: Region) {
+    fly(region.view.center, region.view.zoom);
+  }
+
+  function flyHome() {
+    if (me) fly([me.real.lng, me.real.lat], 3.2);
+  }
+
+  // Fly to a random stranger who's free and open their card.
+  function surprise() {
+    const free = peers.filter((p) => !p.busy && !blockedRef.current.has(p.id));
+    if (free.length === 0) {
+      showNotice("No one's free right now — try again in a moment.");
+      return;
+    }
+    const pick = free[Math.floor(Math.random() * free.length)];
+    setSelectedId(pick.id);
+    fly([pick.lng, pick.lat], 3.5);
+  }
+
   // Local times on the globe need the time-zone table; fetch it up front.
   useEffect(() => {
     void loadTimeZones();
@@ -506,6 +547,8 @@ export default function PulseApp() {
         live={phase === "live"}
         selectedId={selectedId}
         onSelect={setSelectedId}
+        theme={theme}
+        flyTo={flyTo}
       />
 
       {phase === "gate" ? (
@@ -515,6 +558,19 @@ export default function PulseApp() {
           peers={visiblePeers}
           reconnecting={reconnecting}
           showHint={conn.kind === "idle" && !selectedPeer}
+          controls={
+            <>
+              <ExploreMenu
+                counts={countByRegion(visiblePeers)}
+                canGoHome={!!me}
+                canSurprise={visiblePeers.some((p) => !p.busy)}
+                onRegion={exploreRegion}
+                onHome={flyHome}
+                onSurprise={surprise}
+              />
+              <ThemeMenu current={theme.id} onPick={setThemeId} />
+            </>
+          }
         />
       )}
 

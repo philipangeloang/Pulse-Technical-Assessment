@@ -8,6 +8,7 @@ import { darkness } from "@/lib/sun";
 import { circleRingKm } from "@/lib/geo";
 import { localTime } from "@/lib/localtime";
 import { skyAt } from "@/lib/sky";
+import type { Theme } from "@/lib/themes";
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
@@ -30,12 +31,21 @@ export interface MePosition {
   public: LatLng;
 }
 
+// A request to move the camera; a new `key` triggers a new flight.
+export interface FlyRequest {
+  key: number;
+  center: [number, number]; // [lng, lat]
+  zoom: number;
+}
+
 interface Props {
   peers: PeerDot[];
   me: MePosition | null;
   live: boolean; // false: entry backdrop (spins, not interactive)
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  theme: Theme;
+  flyTo: FlyRequest | null;
 }
 
 interface DotEntry {
@@ -66,17 +76,20 @@ function subscribeReducedMotion(onChange: () => void) {
   return () => mq.removeEventListener("change", onChange);
 }
 
-// Tint the stock dark style toward the Observatory palette — deep-navy seas,
-// land lifted just enough to read — and drop the minor labels so the globe
+// Dress the base Mapbox style in the theme: tint land and water, set the
+// atmosphere, colour our own layers, and drop the minor labels so the globe
 // stays calm at every zoom.
-function tintStyle(map: MapboxMap) {
-  if (map.getLayer("land")) {
-    map.setPaintProperty("land", "background-color", "#0d1326");
+function applyTheme(map: MapboxMap, theme: Theme) {
+  const { land, landuse, water } = theme.tint;
+  if (land && map.getLayer("land")) {
+    map.setPaintProperty("land", "background-color", land);
   }
-  for (const id of ["national-park", "landuse", "land-structure-polygon"]) {
-    if (map.getLayer(id)) map.setPaintProperty(id, "fill-color", "#101730");
+  if (landuse) {
+    for (const id of ["national-park", "landuse", "land-structure-polygon"]) {
+      if (map.getLayer(id)) map.setPaintProperty(id, "fill-color", landuse);
+    }
   }
-  if (map.getLayer("water")) map.setPaintProperty("water", "fill-color", "#05080f");
+  if (water && map.getLayer("water")) map.setPaintProperty("water", "fill-color", water);
   for (const id of [
     "poi-label",
     "road-label-simple",
@@ -88,6 +101,17 @@ function tintStyle(map: MapboxMap) {
   ]) {
     if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none");
   }
+  map.setFog(theme.fog);
+  if (map.getLayer("night")) {
+    map.setPaintProperty("night", "fill-color", theme.night.color);
+    map.setPaintProperty("night", "fill-opacity", theme.night.opacity);
+  }
+  if (map.getLayer("privacy-ring")) {
+    map.setPaintProperty("privacy-ring", "fill-color", theme.colors.glow);
+  }
+  if (map.getLayer("public-me")) {
+    map.setPaintProperty("public-me", "circle-stroke-color", theme.colors.glow);
+  }
 }
 
 function flare(el: HTMLElement) {
@@ -97,13 +121,27 @@ function flare(el: HTMLElement) {
   window.setTimeout(() => el.classList.remove("flare"), FLARE_MS);
 }
 
-export default function WorldMap({ peers, me, live, selectedId, onSelect }: Props) {
+export default function WorldMap({
+  peers,
+  me,
+  live,
+  selectedId,
+  onSelect,
+  theme,
+  flyTo,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
   const markersRef = useRef(new Map<string, DotEntry>());
   const meMarkerRef = useRef<Marker | null>(null);
   const [ready, setReady] = useState(false);
   const [nightBands, setNightBands] = useState(0);
+  // Bumped each time a (re)loaded style has our layers — "you" layers refill.
+  const [styleVersion, setStyleVersion] = useState(0);
+  // Test/debug hooks written straight to the DOM (no re-render per frame).
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const themeRef = useRef(theme);
+  const loadedStyleUrl = useRef(theme.mapStyle);
   const reducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
     () => window.matchMedia(REDUCED_MOTION).matches,
@@ -116,6 +154,7 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
   const onSelectRef = useRef(onSelect);
   useEffect(() => {
     onSelectRef.current = onSelect;
+    themeRef.current = theme;
   });
 
   // 1) Map, globe atmosphere, night layers, "you" layers.
@@ -131,7 +170,7 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
       mapboxgl.accessToken = TOKEN;
       const map = new mapboxgl.Map({
         container: containerRef.current,
-        style: "mapbox://styles/mapbox/dark-v11",
+        style: themeRef.current.mapStyle,
         projection: "globe",
         center: [100, 15],
         zoom: 1.6,
@@ -140,15 +179,9 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
       map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
       mapRef.current = map;
 
+      // Runs for the first style and again after every theme change that
+      // swaps the base style (which drops our sources and layers).
       map.on("style.load", () => {
-        tintStyle(map);
-        map.setFog({
-          color: "rgb(10, 14, 28)",
-          "high-color": "rgb(32, 46, 104)",
-          "horizon-blend": 0.04,
-          "space-color": "rgb(3, 5, 10)",
-          "star-intensity": 0.55,
-        });
         // Keep place labels readable on top of the night side.
         const firstLabel = map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
         map.addSource("night", { type: "geojson", data: nightData(new Date()) });
@@ -184,9 +217,19 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
             "circle-stroke-opacity": 0.8,
           },
         });
+        applyTheme(map, themeRef.current);
         if (cancelled) return;
         setNightBands(DARKNESS_BANDS.length);
         setReady(true);
+        setStyleVersion((v) => v + 1);
+        if (wrapperRef.current) wrapperRef.current.dataset.mapStyle = themeRef.current.id;
+      });
+
+      map.on("moveend", () => {
+        const c = map.getCenter();
+        if (wrapperRef.current) {
+          wrapperRef.current.dataset.center = `${c.lng.toFixed(2)},${c.lat.toFixed(2)}`;
+        }
       });
 
       nightTimer = setInterval(() => {
@@ -252,6 +295,30 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
     }
   }, [live, ready, spinning, meKey]);
 
+  // Theme changes: swap the base style if it differs (style.load re-adds our
+  // layers and applies the theme), otherwise restyle in place.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (theme.mapStyle !== loadedStyleUrl.current) {
+      loadedStyleUrl.current = theme.mapStyle;
+      // A full reload (not a diff) so style.load fires and re-adds our layers.
+      map.setStyle(theme.mapStyle, {
+        diff: false,
+      } as Parameters<MapboxMap["setStyle"]>[1]);
+    } else {
+      applyTheme(map, theme);
+      if (wrapperRef.current) wrapperRef.current.dataset.mapStyle = theme.id;
+    }
+  }, [theme, ready]);
+
+  // Explore: fly wherever we're asked (a new request key means a new flight).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !flyTo) return;
+    map.flyTo({ center: flyTo.center, zoom: flyTo.zoom, duration: 2200 });
+  }, [flyTo, ready]);
+
   // 3) You: marker at your real location, the 1–3 km ring your dot is placed
   // in, and a hollow marker where others actually see you.
   useEffect(() => {
@@ -293,7 +360,7 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
     return () => {
       cancelled = true;
     };
-  }, [me, ready]);
+  }, [me, ready, styleVersion]);
 
   // 4) Strangers: ember dots reconciled on every poll. A dot that just became
   // busy flares — someone somewhere started a conversation.
@@ -358,6 +425,7 @@ export default function WorldMap({ peers, me, live, selectedId, onSelect }: Prop
 
   return (
     <div
+      ref={wrapperRef}
       className="absolute inset-0"
       data-night-bands={nightBands}
       data-spinning={spinning ? "true" : "false"}

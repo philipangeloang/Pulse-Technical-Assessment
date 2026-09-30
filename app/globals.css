@@ -44,6 +44,28 @@ body {
   backdrop-filter: blur(20px) saturate(140%);
 }
 
+/* Daybreak (a light map) and Blue Marble (bright satellite land) need darker
+   panels to keep text readable; Daybreak also outlines the markers so they
+   read on a pale map. */
+[data-theme="daybreak"] .glass,
+[data-theme="blue-marble"] .glass {
+  background: linear-gradient(160deg, rgb(28 34 58 / 0.8), rgb(16 20 38 / 0.74));
+}
+[data-theme="daybreak"] .pulse-dot {
+  filter: drop-shadow(0 0 1.5px rgb(20 24 40 / 0.75));
+}
+[data-theme="daybreak"] .pulse-dot.is-busy {
+  filter: saturate(0.3) drop-shadow(0 0 1.5px rgb(20 24 40 / 0.75));
+}
+[data-theme="daybreak"] .pulse-me-core {
+  box-shadow:
+    0 0 0 3px rgb(20 24 40 / 0.55),
+    0 0 18px 4px color-mix(in srgb, var(--color-ember) 50%, transparent);
+}
+[data-theme="daybreak"] .pulse-me-label {
+  color: #1b2140;
+}
+
 /* Darker glass for anything floating over live video, which can be bright. */
 .glass.is-dark {
   background: linear-gradient(160deg, rgb(10 15 31 / 0.78), rgb(5 7 13 / 0.7));
@@ -67,12 +89,12 @@ body {
 }
 .btn-ember {
   color: var(--color-space);
-  background: linear-gradient(180deg, #ffa67f, var(--color-ember));
-  box-shadow: 0 10px 30px -10px rgb(255 138 92 / 0.8);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-ember), white 25%), var(--color-ember));
+  box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--color-ember) 80%, transparent);
 }
 .btn-ember:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 14px 36px -10px rgb(255 138 92 / 0.95);
+  box-shadow: 0 14px 36px -10px color-mix(in srgb, var(--color-ember) 95%, transparent);
 }
 .btn-ghost {
   color: var(--color-ink);
@@ -134,9 +156,9 @@ body {
   background: radial-gradient(
     circle,
     #fff3e3 0 18%,
-    #ffb385 34%,
+    color-mix(in srgb, var(--color-ember), white 40%) 34%,
     var(--color-ember) 52%,
-    rgb(255 138 92 / 0) 72%
+    color-mix(in srgb, var(--color-ember) 0%, transparent) 72%
   );
   animation: heartbeat 2.8s ease-in-out infinite;
   transition:
@@ -155,8 +177,8 @@ body {
 }
 .pulse-dot.is-selected {
   box-shadow:
-    0 0 0 3px rgb(255 217 168 / 0.9),
-    0 0 24px 6px rgb(255 138 92 / 0.6);
+    0 0 0 3px color-mix(in srgb, var(--color-glow) 90%, transparent),
+    0 0 24px 6px color-mix(in srgb, var(--color-ember) 60%, transparent);
   animation: none;
 }
 /* Tooltip: who they are, in one line. */
@@ -207,14 +229,14 @@ body {
   background: #fff;
   box-shadow:
     0 0 0 4px rgb(255 255 255 / 0.15),
-    0 0 18px 4px rgb(255 217 168 / 0.5);
+    0 0 18px 4px color-mix(in srgb, var(--color-glow) 50%, transparent);
 }
 .pulse-me-core::after {
   content: "";
   position: absolute;
   inset: -10px;
   border-radius: 9999px;
-  border: 1px solid rgb(255 217 168 / 0.6);
+  border: 1px solid color-mix(in srgb, var(--color-glow) 60%, transparent);
   animation: sonar 3s ease-out infinite;
 }
 .pulse-me-label {
@@ -261,7 +283,7 @@ body {
   height: 64px;
   border-radius: 9999px;
   color: var(--color-glow);
-  background: radial-gradient(circle, rgb(255 138 92 / 0.35), rgb(255 138 92 / 0.05) 70%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--color-ember) 35%, transparent), color-mix(in srgb, var(--color-ember) 5%, transparent) 70%);
 }
 .incoming-ring::before,
 .incoming-ring::after {
@@ -269,7 +291,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  border: 1px solid rgb(255 217 168 / 0.6);
+  border: 1px solid color-mix(in srgb, var(--color-glow) 60%, transparent);
   animation: sonar 2.4s ease-out infinite;
 }
 .incoming-ring::after {
@@ -289,16 +311,16 @@ body {
 @keyframes heartbeat {
   0%,
   100% {
-    box-shadow: 0 0 10px 2px rgb(255 138 92 / 0.35);
+    box-shadow: 0 0 10px 2px color-mix(in srgb, var(--color-ember) 35%, transparent);
   }
   12% {
-    box-shadow: 0 0 22px 7px rgb(255 138 92 / 0.75);
+    box-shadow: 0 0 22px 7px color-mix(in srgb, var(--color-ember) 75%, transparent);
   }
   24% {
-    box-shadow: 0 0 12px 3px rgb(255 138 92 / 0.4);
+    box-shadow: 0 0 12px 3px color-mix(in srgb, var(--color-ember) 40%, transparent);
   }
   36% {
-    box-shadow: 0 0 18px 5px rgb(255 138 92 / 0.6);
+    box-shadow: 0 0 18px 5px color-mix(in srgb, var(--color-ember) 60%, transparent);
   }
 }
 @keyframes flare {

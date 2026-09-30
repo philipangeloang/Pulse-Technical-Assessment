@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { PeerDot } from "@/lib/types";
 import { isDark } from "@/lib/sky";
 import { useNow } from "@/lib/use-now";
@@ -10,10 +11,12 @@ export default function Hud({
   peers,
   reconnecting,
   showHint,
+  controls,
 }: {
   peers: PeerDot[];
   reconnecting: boolean;
   showHint: boolean;
+  controls?: ReactNode;
 }) {
   const now = useNow();
   const n = peers.length;
@@ -35,6 +38,9 @@ export default function Hud({
             </p>
           </div>
         </div>
+        {controls && (
+          <div className="pointer-events-auto mt-2 flex gap-2">{controls}</div>
+        )}
         {reconnecting && (
           <p className="glass mt-2 inline-block rounded-full px-3 py-1 text-xs text-glow">
             Reconnecting…
