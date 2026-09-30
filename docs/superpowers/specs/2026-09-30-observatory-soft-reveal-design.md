@@ -117,7 +117,7 @@ directly. `lib/frost.ts`:
    - **Frosted:** draw to a 32 px-wide canvas, then 128 px, then upscale to the
      output with high-quality smoothing — a soft frosted-glass image that works
      in every browser (no `ctx.filter` dependency).
-   - **Revealed:** draw the frame as-is. The switch cross-fades over ~600 ms.
+   - **Revealed:** draw the frame as-is. Revealing cross-fades in over ~600 ms; frosting again is instant (not one more clear frame once you ask to be hidden).
 3. `canvas.captureStream(30)` provides the outgoing video track; the original
    audio track is sent unchanged.
 

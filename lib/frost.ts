@@ -11,6 +11,14 @@ const REVEAL_MS = 600;
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
+// How much of the clear frame to blend in next. Revealing fades in over
+// REVEAL_MS; frosting is instant — once you ask to be hidden, not one more
+// clear-ish frame goes out.
+export function nextRevealAmount(current: number, target: number, dtMs: number): number {
+  if (target <= current) return target;
+  return Math.min(target, current + dtMs / REVEAL_MS);
+}
+
 // Output size: the camera's aspect ratio, at most 640 px wide.
 export function frostSize(width: number, height: number): { width: number; height: number } {
   const w = width > 0 ? width : 640;
@@ -72,6 +80,7 @@ export class FrostedCamera {
 
   setRevealed(revealed: boolean): void {
     this.target = revealed ? 1 : 0;
+    this.amount = nextRevealAmount(this.amount, this.target, 0);
   }
 
   setMicMuted(muted: boolean): void {
@@ -88,12 +97,9 @@ export class FrostedCamera {
 
   private frame = (now: number) => {
     if (this.stopped) return;
-    const step = (this.last ? now - this.last : 16) / REVEAL_MS;
+    const dt = this.last ? now - this.last : 16;
     this.last = now;
-    this.amount =
-      this.target > this.amount
-        ? Math.min(this.target, this.amount + step)
-        : Math.max(this.target, this.amount - step);
+    this.amount = nextRevealAmount(this.amount, this.target, dt);
     if (this.video.readyState >= 2) this.draw();
     this.raf = requestAnimationFrame(this.frame);
   };
