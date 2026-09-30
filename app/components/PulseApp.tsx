@@ -8,7 +8,7 @@ import IncomingCall from "./IncomingCall";
 import { Video } from "lucide-react";
 import WorldMap, { type MePosition } from "./WorldMap";
 import ConnectionPrompt from "./ConnectionPrompt";
-import ChatPanel, { type ChatMessage } from "./ChatPanel";
+import ChatSheet, { type ChatMessage } from "./ChatSheet";
 import VideoPanel from "./VideoPanel";
 import Toasts, { type Toast } from "./Toasts";
 import {
@@ -53,6 +53,10 @@ export default function PulseApp() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [me, setMe] = useState<MePosition | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Skip & block: hidden and auto-declined for the rest of this visit.
+  // (Session ids are ephemeral by design, so nothing outlives the tab.)
+  const blockedRef = useRef<Set<string>>(new Set());
+  const [blocked, setBlocked] = useState<ReadonlySet<string>>(new Set());
   const [reconnecting, setReconnecting] = useState(false);
   const pollFailures = useRef(0);
 
@@ -96,7 +100,10 @@ export default function PulseApp() {
   }
 
   function addMessage(mine: boolean, text: string) {
-    setMessages((prev) => [...prev, { id: msgId.current++, mine, text }]);
+    setMessages((prev) => [
+      ...prev,
+      { id: msgId.current++, mine, text, at: Date.now() },
+    ]);
   }
 
   function teardown(message?: string) {
@@ -236,6 +243,15 @@ export default function PulseApp() {
     teardown();
   }
 
+  function skipAndBlock() {
+    const c = connRef.current;
+    if (c.kind !== "connecting" && c.kind !== "connected") return;
+    blockedRef.current.add(c.peerId);
+    setBlocked(new Set(blockedRef.current));
+    endConnection();
+    showNotice("Skipped — you won't see them again this visit.");
+  }
+
   function startVideoRequest() {
     if (videoRef.current !== "none" || !peerRef.current) return;
     setVideo("requesting");
@@ -275,6 +291,10 @@ export default function PulseApp() {
   function processSignal(sig: SignalMsg) {
     switch (sig.type) {
       case "request": {
+        if (blockedRef.current.has(sig.fromId)) {
+          void signal(sig.fromId, "decline");
+          break;
+        }
         if (connRef.current.kind === "idle") {
           setConn({ kind: "incoming", peerId: sig.fromId });
         } else {
@@ -416,14 +436,15 @@ export default function PulseApp() {
   }, []);
 
   const inChat = conn.kind === "connecting" || conn.kind === "connected";
-  const selectedPeer = peers.find((p) => p.id === selectedId);
+  const visiblePeers = peers.filter((p) => !blocked.has(p.id));
+  const selectedPeer = visiblePeers.find((p) => p.id === selectedId);
   const requestingSelected =
     conn.kind === "requesting" && conn.peerId === selectedId;
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-space">
       <WorldMap
-        peers={peers}
+        peers={visiblePeers}
         me={me}
         live={phase === "live"}
         selectedId={selectedId}
@@ -434,7 +455,7 @@ export default function PulseApp() {
         <EntryOverlay onReady={handleReady} />
       ) : (
         <Hud
-          peers={peers}
+          peers={visiblePeers}
           reconnecting={reconnecting}
           showHint={conn.kind === "idle" && !selectedPeer}
         />
@@ -459,16 +480,19 @@ export default function PulseApp() {
 
       {conn.kind === "incoming" && (
         <IncomingCall
-          peer={peers.find((p) => p.id === conn.peerId)}
+          peer={visiblePeers.find((p) => p.id === conn.peerId)}
           onAccept={acceptIncoming}
           onDecline={declineIncoming}
         />
       )}
 
       {inChat && (
-        <ChatPanel
+        <ChatSheet
           messages={messages}
           connected={conn.kind === "connected"}
+          peer={visiblePeers.find((p) => p.id === conn.peerId)}
+          videoActive={video === "active"}
+          videoPending={video === "requesting"}
           videoBusy={video !== "none"}
           onSend={(text) => {
             peerRef.current?.sendChat(text);
@@ -476,13 +500,8 @@ export default function PulseApp() {
           }}
           onStartVideo={startVideoRequest}
           onEnd={endConnection}
+          onSkip={skipAndBlock}
         />
-      )}
-
-      {video === "requesting" && (
-        <div className="glass absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full px-4 py-2 text-sm text-ink">
-          Waiting for them to accept video…
-        </div>
       )}
 
       {video === "incoming" && (

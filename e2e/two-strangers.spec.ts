@@ -2,6 +2,7 @@ import {
   test,
   expect,
   type Browser,
+  type BrowserContextOptions,
   type Locator,
   type Page,
 } from "@playwright/test";
@@ -52,11 +53,21 @@ async function sayHi(viewer: Page, target: Page) {
 async function openStranger(
   browser: Browser,
   geolocation: { latitude: number; longitude: number },
-  { unreachable = false, controllableClock = false, hostile = false } = {},
+  {
+    unreachable = false,
+    controllableClock = false,
+    hostile = false,
+    ...contextOptions
+  }: {
+    unreachable?: boolean;
+    controllableClock?: boolean;
+    hostile?: boolean;
+  } & BrowserContextOptions = {},
 ): Promise<Page> {
   const context = await browser.newContext({
     geolocation,
     permissions: ["geolocation", "camera", "microphone"],
+    ...contextOptions,
   });
   await useClientIp(context);
   const page = await context.newPage();
@@ -161,7 +172,7 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await test.step("video call starts with remote video on both sides", async () => {
-    await alice.getByRole("button", { name: "Video" }).click();
+    await alice.getByRole("button", { name: "Start video" }).click();
     await expect(bob.getByText(/start a video call?/i)).toBeVisible();
     await bob.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
@@ -175,8 +186,8 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await test.step("video can be restarted, from the other side", async () => {
-    await expect(bob.getByRole("button", { name: "Video" })).toBeEnabled();
-    await bob.getByRole("button", { name: "Video" }).click();
+    await expect(bob.getByRole("button", { name: "Start video" })).toBeEnabled();
+    await bob.getByRole("button", { name: "Start video" }).click();
     await expect(alice.getByText(/start a video call?/i)).toBeVisible();
     await alice.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
@@ -197,7 +208,7 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await test.step("hanging up frees both users", async () => {
-    await bob.getByRole("button", { name: "End", exact: true }).click();
+    await bob.getByRole("button", { name: "End chat" }).click();
     await expect(alice.getByPlaceholder(/type a message/i)).toBeHidden();
     // Neither dot should stay dimmed as busy.
     await expect(await dotOf(alice, bob)).toHaveCSS("opacity", "1");
@@ -348,4 +359,49 @@ test("the entry globe doesn't spin for reduced-motion users", async ({ browser }
   await expect(a.locator("[data-spinning='false']")).toHaveCount(1);
   await still.close();
   await moving.close();
+});
+
+test("skip & block hides the stranger and declines their requests", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
+
+  await bob.getByRole("button", { name: "Skip and block" }).click();
+  await expect(alice.getByText(/stranger disconnected/i)).toBeVisible();
+  await expect(await dotOf(bob, alice)).toHaveCount(0);
+  await expect(await dotOf(alice, bob)).toHaveCount(1);
+
+  await sayHi(alice, bob);
+  await expect(alice.getByText(/declined/i)).toBeVisible();
+  await expect(bob.getByText(/wants to talk/i)).toBeHidden();
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("on a phone, long messages wrap and nothing scrolls sideways", async ({ browser }) => {
+  const phone = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
+  const alice = await openStranger(browser, PAPEETE, phone);
+  const bob = await openStranger(browser, AVARUA, phone);
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
+
+  const long = "x".repeat(300);
+  await alice.getByPlaceholder(/type a message/i).fill(long);
+  await alice.getByRole("button", { name: "Send" }).click();
+  await expect(bob.getByText(long)).toBeVisible();
+
+  for (const page of [alice, bob]) {
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    const box = await page.getByText(long).boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  }
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
 });
