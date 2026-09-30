@@ -50,8 +50,9 @@ the interface. Design spec: `docs/superpowers/specs/`.
   aware), timestamps, long words wrap, and video no longer covers the conversation.
 - **States and copy for everything:** empty globe ("open a second window to meet
   yourself"), a Reconnecting pill, toasts for every outcome.
-- **Restraint:** CSS-only motion, `prefers-reduced-motion` stops the spin and
-  animations, and it all runs under the strict CSP with zero violations.
+- **Restraint:** CSS-only motion; `prefers-reduced-motion` stops the entry spin and the
+  CSS animations (the one camera move that flies you to your location is kept, to orient
+  you). It all runs under the strict CSP with zero violations.
 
 Verified by looking, not just by tests: I screenshot every screen while building. That
 caught two real bugs the tests couldn't — the dev server serving stale CSS, and
@@ -68,8 +69,9 @@ shrunk to 32 px and scaled back up, and the *canvas* stream is what's sent. The 
 person never receives a clear frame until you tap **Reveal me** — even a modified client
 can't un-frost what never left your device. Consent runs both ways: when they reveal,
 you're told, but they stay blurred on your side until you tap **Show them**. Every call
-starts frosted again. Plus **Skip & block**: ends the chat, hides them and silently
-declines their requests for the rest of the visit.
+starts frosted again, and **Frost me** is instant (no fade — not one more clear frame).
+Plus **Skip & block**: ends the chat, hides them and silently declines their requests
+for the rest of your session.
 
 The e2e test proves the enforcement rather than the UI: it measures edge detail
 (variance of the Laplacian) in the frames the **receiver decodes** — ~2–5 while frosted,
@@ -121,7 +123,10 @@ API, then wrote `e2e/api-security.spec.ts` (red first) as the regression suite.
   without device attestation.
 - **Mapbox token is public by design** — restrict it to the production URL in the
   Mapbox dashboard.
-- **No report / block mechanism yet** for abusive strangers.
+- **Skip & block lasts for your session only.** Sessions are ephemeral by design, so a
+  blocked stranger who reloads (or re-joins after a frozen tab) comes back with a new id.
+  A durable block would mean storing something about them (e.g. a keyed hash of their
+  IP) — a real trade-off against "nothing stored". No server-side reports yet either.
 
-Tests: `npm test` (35 unit tests) and `npm run test:e2e` (the API security suite plus
-two-browser flows — 23 tests) all pass against both `next dev` and a production build.
+Tests: `npm test` (37 unit tests) and `npm run test:e2e` (the API security suite plus
+two-browser flows — 25 tests) all pass against both `next dev` and a production build.

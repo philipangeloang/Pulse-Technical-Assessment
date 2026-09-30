@@ -272,7 +272,7 @@ export default function PulseApp() {
     blockedRef.current.add(c.peerId);
     setBlocked(new Set(blockedRef.current));
     endConnection();
-    showNotice("Skipped — you won't see them again this visit.");
+    showNotice("Skipped and blocked for this session.");
   }
 
   function startVideoRequest() {
