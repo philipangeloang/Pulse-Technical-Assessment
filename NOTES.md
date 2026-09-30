@@ -46,6 +46,12 @@ the interface. Design spec: `docs/superpowers/specs/`.
 - **Honest privacy UI.** Your marker sits at your real location (only on your screen)
   inside the faint 1–3 km ring your public dot is placed in, with a hollow marker where
   others actually see you.
+- **Explore instead of panning around.** A menu lists regions with live counts
+  ("Asia · 3 awake") and flies the globe there; *Back to me* and *Surprise me* (fly to a
+  random free stranger and open their card) are one tap each.
+- **Themes, for fun:** Midnight (default), Aurora, Blue Marble (real satellite Earth) and
+  Daybreak (a light map). Each restyles the globe, atmosphere, night shading and accent
+  colours; the choice is personal and remembered in the browser only.
 - **Chat as a glass sheet** — side sheet on desktop, bottom sheet on phones (safe-area
   aware), timestamps, long words wrap, and video no longer covers the conversation.
 - **States and copy for everything:** empty globe ("open a second window to meet
@@ -128,5 +134,5 @@ API, then wrote `e2e/api-security.spec.ts` (red first) as the regression suite.
   A durable block would mean storing something about them (e.g. a keyed hash of their
   IP) — a real trade-off against "nothing stored". No server-side reports yet either.
 
-Tests: `npm test` (37 unit tests) and `npm run test:e2e` (the API security suite plus
-two-browser flows — 25 tests) all pass against both `next dev` and a production build.
+Tests: `npm test` (61 unit tests) and `npm run test:e2e` (the API security suite plus
+two-browser flows — 27 tests) all pass against both `next dev` and a production build.
