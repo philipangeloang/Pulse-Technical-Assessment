@@ -1,50 +1,128 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
-import type { Map as MapboxMap, Marker } from "mapbox-gl";
+import type { GeoJSONSource, Map as MapboxMap, Marker } from "mapbox-gl";
 import type { PeerDot } from "@/lib/types";
+import { darkness } from "@/lib/sun";
+import { circleRingKm } from "@/lib/geo";
+import { localTime } from "@/lib/localtime";
+import { skyAt } from "@/lib/sky";
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
-function dotColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = (hash * 31 + id.charCodeAt(i)) | 0;
-  }
-  return `hsl(${Math.abs(hash) % 360}, 70%, 60%)`;
+// Night deepens through civil, nautical and astronomical twilight: one
+// translucent layer per band, so overlaps darken smoothly.
+const DARKNESS_BANDS = [0, -6, -12, -18];
+const NIGHT_REFRESH_MS = 60_000;
+const FLARE_MS = 1_600;
+const SPIN_DEG_PER_SEC = 4;
+
+export interface LatLng {
+  lat: number;
+  lng: number;
 }
 
-export default function WorldMap({
-  peers,
-  me,
-  onPeerClick,
-  canConnect,
-}: {
+// Your real location (only ever on your own screen) and the offset position
+// everyone else sees.
+export interface MePosition {
+  real: LatLng;
+  public: LatLng;
+}
+
+interface Props {
   peers: PeerDot[];
-  me: { lat: number; lng: number } | null;
-  onPeerClick: (id: string) => void;
-  canConnect: boolean;
-}) {
+  me: MePosition | null;
+  live: boolean; // false: entry backdrop (spins, not interactive)
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+}
+
+interface DotEntry {
+  marker: Marker;
+  wrapper: HTMLDivElement;
+  dot: HTMLButtonElement;
+  busy: boolean;
+}
+
+const EMPTY = { type: "FeatureCollection" as const, features: [] };
+
+function nightData(now: Date) {
+  return {
+    type: "FeatureCollection" as const,
+    features: DARKNESS_BANDS.map((altitude) => ({
+      type: "Feature" as const,
+      properties: { altitude },
+      geometry: darkness(now, altitude),
+    })),
+  };
+}
+
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+
+function subscribeReducedMotion(onChange: () => void) {
+  const mq = window.matchMedia(REDUCED_MOTION);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+
+// Tint the stock dark style toward the Observatory palette — deep-navy seas,
+// land lifted just enough to read — and drop the minor labels so the globe
+// stays calm at every zoom.
+function tintStyle(map: MapboxMap) {
+  if (map.getLayer("land")) {
+    map.setPaintProperty("land", "background-color", "#0d1326");
+  }
+  for (const id of ["national-park", "landuse", "land-structure-polygon"]) {
+    if (map.getLayer(id)) map.setPaintProperty(id, "fill-color", "#101730");
+  }
+  if (map.getLayer("water")) map.setPaintProperty("water", "fill-color", "#05080f");
+  for (const id of [
+    "poi-label",
+    "road-label-simple",
+    "airport-label",
+    "natural-point-label",
+    "natural-line-label",
+    "waterway-label",
+    "settlement-subdivision-label",
+  ]) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none");
+  }
+}
+
+function flare(el: HTMLElement) {
+  el.classList.remove("flare");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flare");
+  window.setTimeout(() => el.classList.remove("flare"), FLARE_MS);
+}
+
+export default function WorldMap({ peers, me, live, selectedId, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
-  const markersRef = useRef<Map<string, Marker>>(new Map());
+  const markersRef = useRef(new Map<string, DotEntry>());
   const meMarkerRef = useRef<Marker | null>(null);
   const [ready, setReady] = useState(false);
+  const [nightBands, setNightBands] = useState(0);
+  const reducedMotion = useSyncExternalStore(
+    subscribeReducedMotion,
+    () => window.matchMedia(REDUCED_MOTION).matches,
+    () => false,
+  );
+  // The entry backdrop spins, unless the user prefers reduced motion.
+  const spinning = ready && !live && !reducedMotion;
 
-  // Marker click handlers are bound once, so read the live click handler +
-  // connectability through refs (synced in an effect, never during render).
-  const onPeerClickRef = useRef(onPeerClick);
-  const canConnectRef = useRef(canConnect);
+  // Marker click handlers are bound once; read the live callback via a ref.
+  const onSelectRef = useRef(onSelect);
   useEffect(() => {
-    onPeerClickRef.current = onPeerClick;
-    canConnectRef.current = canConnect;
+    onSelectRef.current = onSelect;
   });
 
-  // Initialise the map once.
+  // 1) Map, globe atmosphere, night layers, "you" layers.
   useEffect(() => {
     if (!TOKEN || !containerRef.current) return;
     let cancelled = false;
+    let nightTimer: ReturnType<typeof setInterval> | undefined;
     const markers = markersRef.current;
 
     (async () => {
@@ -54,20 +132,75 @@ export default function WorldMap({
       const map = new mapboxgl.Map({
         container: containerRef.current,
         style: "mapbox://styles/mapbox/dark-v11",
-        // Open centered on the user if we know where they are, else world view.
-        center: me ? [me.lng, me.lat] : [0, 20],
-        zoom: me ? 4 : 1.4,
-        attributionControl: true,
+        projection: "globe",
+        center: [100, 15],
+        zoom: 1.6,
+        attributionControl: false,
       });
-      map.on("load", () => {
-        if (!cancelled) setReady(true);
-      });
+      map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
       mapRef.current = map;
+
+      map.on("style.load", () => {
+        tintStyle(map);
+        map.setFog({
+          color: "rgb(10, 14, 28)",
+          "high-color": "rgb(32, 46, 104)",
+          "horizon-blend": 0.04,
+          "space-color": "rgb(3, 5, 10)",
+          "star-intensity": 0.55,
+        });
+        // Keep place labels readable on top of the night side.
+        const firstLabel = map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+        map.addSource("night", { type: "geojson", data: nightData(new Date()) });
+        map.addLayer(
+          {
+            id: "night",
+            type: "fill",
+            source: "night",
+            paint: { "fill-color": "#010209", "fill-opacity": 0.2, "fill-antialias": false },
+          },
+          firstLabel,
+        );
+        map.addSource("privacy-ring", { type: "geojson", data: EMPTY });
+        map.addLayer(
+          {
+            id: "privacy-ring",
+            type: "fill",
+            source: "privacy-ring",
+            paint: { "fill-color": "#ffd9a8", "fill-opacity": 0.08 },
+          },
+          firstLabel,
+        );
+        map.addSource("public-me", { type: "geojson", data: EMPTY });
+        map.addLayer({
+          id: "public-me",
+          type: "circle",
+          source: "public-me",
+          paint: {
+            "circle-radius": 5,
+            "circle-color": "rgba(0,0,0,0)",
+            "circle-stroke-color": "#ffd9a8",
+            "circle-stroke-width": 1.5,
+            "circle-stroke-opacity": 0.8,
+          },
+        });
+        if (cancelled) return;
+        setNightBands(DARKNESS_BANDS.length);
+        setReady(true);
+      });
+
+      nightTimer = setInterval(() => {
+        (map.getSource("night") as GeoJSONSource | undefined)?.setData(nightData(new Date()));
+      }, NIGHT_REFRESH_MS);
+
+      // Clicking empty map deselects (dot clicks stop propagation).
+      map.on("click", () => onSelectRef.current(null));
     })();
 
     return () => {
       cancelled = true;
-      markers.forEach((m) => m.remove());
+      if (nightTimer) clearInterval(nightTimer);
+      markers.forEach(({ marker }) => marker.remove());
       markers.clear();
       meMarkerRef.current?.remove();
       meMarkerRef.current = null;
@@ -75,103 +208,169 @@ export default function WorldMap({
       mapRef.current = null;
       setReady(false);
     };
-    // `me` is only read for the initial center; we don't want to re-init on change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Show / move the user's own "you are here" pin.
+  // 2) Entry backdrop spins slowly and ignores input; going live flies to you.
+  const meKey = me ? `${me.real.lat},${me.real.lng}` : "";
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const handlers = [
+      map.dragPan,
+      map.scrollZoom,
+      map.boxZoom,
+      map.dragRotate,
+      map.keyboard,
+      map.doubleClickZoom,
+      map.touchZoomRotate,
+    ];
+    if (!live) {
+      handlers.forEach((h) => h.disable());
+      if (!spinning) return;
+      let active = true;
+      const spin = () => {
+        if (!active) return;
+        const c = map.getCenter();
+        map.easeTo({
+          center: [c.lng + SPIN_DEG_PER_SEC, c.lat],
+          duration: 1000,
+          easing: (t) => t,
+        });
+      };
+      map.on("moveend", spin);
+      spin();
+      return () => {
+        active = false;
+        map.off("moveend", spin);
+        map.stop();
+      };
+    }
+    handlers.forEach((h) => h.enable());
+    if (meKey) {
+      const [lat, lng] = meKey.split(",").map(Number);
+      map.flyTo({ center: [lng, lat], zoom: 3.2, duration: 2800, essential: true });
+    }
+  }, [live, ready, spinning, meKey]);
+
+  // 3) You: marker at your real location, the 1–3 km ring your dot is placed
+  // in, and a hollow marker where others actually see you.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready || !me) return;
     let cancelled = false;
-
     (async () => {
       const mapboxgl = (await import("mapbox-gl")).default;
       if (cancelled) return;
       if (!meMarkerRef.current) {
         const el = document.createElement("div");
         el.className = "pulse-me";
-        el.title = "You are here";
-        el.innerHTML = `<span class="pulse-me-label">Me</span>📍`;
-        // anchor "bottom" → the pin's tip sits on the exact coordinate.
-        meMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: "bottom" })
-          .setLngLat([me.lng, me.lat])
+        el.title = "You — others see your dot somewhere 1–3 km from here";
+        el.innerHTML =
+          '<span class="pulse-me-core"></span><span class="pulse-me-label">You</span>';
+        meMarkerRef.current = new mapboxgl.Marker({ element: el, occludedOpacity: 0 })
+          .setLngLat([me.real.lng, me.real.lat])
           .addTo(map);
       } else {
-        meMarkerRef.current.setLngLat([me.lng, me.lat]);
+        meMarkerRef.current.setLngLat([me.real.lng, me.real.lat]);
       }
+      (map.getSource("privacy-ring") as GeoJSONSource).setData({
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            circleRingKm(me.real.lat, me.real.lng, 3),
+            circleRingKm(me.real.lat, me.real.lng, 1).reverse(),
+          ],
+        },
+      });
+      (map.getSource("public-me") as GeoJSONSource).setData({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Point", coordinates: [me.public.lng, me.public.lat] },
+      });
     })();
-
     return () => {
       cancelled = true;
     };
   }, [me, ready]);
 
-  // Reconcile markers whenever the peer list changes (or the map becomes ready).
+  // 4) Strangers: ember dots reconciled on every poll. A dot that just became
+  // busy flares — someone somewhere started a conversation.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     let cancelled = false;
-
     (async () => {
       const mapboxgl = (await import("mapbox-gl")).default;
       if (cancelled) return;
       const markers = markersRef.current;
       const seen = new Set<string>();
+      const now = new Date();
 
       for (const peer of peers) {
         seen.add(peer.id);
-        let marker = markers.get(peer.id);
-        if (!marker) {
-          const el = document.createElement("button");
-          el.className = "pulse-dot";
-          el.dataset.peerId = peer.id;
-          el.style.background = dotColor(peer.id);
-          el.title = "Tap to connect";
-          el.addEventListener("click", (e) => {
+        let entry = markers.get(peer.id);
+        if (!entry) {
+          const wrapper = document.createElement("div");
+          wrapper.className = "pulse-marker";
+          const dot = document.createElement("button");
+          dot.type = "button";
+          dot.className = "pulse-dot";
+          dot.dataset.peerId = peer.id;
+          dot.addEventListener("click", (e) => {
             e.stopPropagation();
-            if (canConnectRef.current) onPeerClickRef.current(peer.id);
+            onSelectRef.current(peer.id);
           });
-          marker = new mapboxgl.Marker({ element: el })
+          wrapper.appendChild(dot);
+          const marker = new mapboxgl.Marker({ element: wrapper, occludedOpacity: 0 })
             .setLngLat([peer.lng, peer.lat])
             .addTo(map);
-          markers.set(peer.id, marker);
+          entry = { marker, wrapper, dot, busy: peer.busy };
+          markers.set(peer.id, entry);
+        } else if (peer.busy && !entry.busy) {
+          flare(entry.wrapper);
         }
-        marker.getElement().style.opacity = peer.busy ? "0.35" : "1";
+        entry.busy = peer.busy;
+        entry.dot.classList.toggle("is-busy", peer.busy);
+        entry.dot.classList.toggle("is-selected", peer.id === selectedId);
+        const time = localTime(peer.lat, peer.lng, now);
+        const label = `Stranger · ${time.approximate ? "~" : ""}${time.text} · ${skyAt(
+          peer.lat,
+          peer.lng,
+          now,
+        )}${peer.busy ? " · in a conversation" : ""}`;
+        entry.dot.dataset.label = label;
+        entry.dot.setAttribute("aria-label", label);
       }
 
-      // Drop markers for peers that went offline / got filtered out.
-      for (const [id, marker] of markers) {
+      for (const [id, { marker }] of markers) {
         if (!seen.has(id)) {
           marker.remove();
           markers.delete(id);
         }
       }
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [peers, ready]);
+  }, [peers, ready, selectedId]);
 
   return (
-    <div className="absolute inset-0">
-      <div ref={containerRef} className="h-full w-full bg-zinc-900" />
-
+    <div
+      className="absolute inset-0"
+      data-night-bands={nightBands}
+      data-spinning={spinning ? "true" : "false"}
+    >
+      <div ref={containerRef} className="h-full w-full bg-space" />
       {!TOKEN && (
-        <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-          <p className="max-w-md rounded-lg bg-zinc-800 p-4 text-sm text-zinc-200">
-            Set{" "}
-            <code className="text-emerald-400">NEXT_PUBLIC_MAPBOX_TOKEN</code> in{" "}
-            <code>.env</code> to load the map.
+        <div className="absolute inset-0 flex items-center justify-center p-6">
+          <p className="glass max-w-md rounded-2xl p-5 text-center text-sm text-ink">
+            Set <code className="text-glow">NEXT_PUBLIC_MAPBOX_TOKEN</code> in{" "}
+            <code>.env</code> to load the globe.
           </p>
         </div>
       )}
-
-      {/* Online count */}
-      <div className="absolute bottom-4 left-4 rounded-full bg-zinc-900/80 px-3 py-1.5 text-xs text-zinc-300 backdrop-blur">
-        {peers.length} online
-      </div>
     </div>
   );
 }

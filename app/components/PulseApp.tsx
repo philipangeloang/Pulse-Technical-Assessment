@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import EntryGate from "./EntryGate";
-import WorldMap from "./WorldMap";
+import WorldMap, { type MePosition } from "./WorldMap";
 import ConnectionPrompt from "./ConnectionPrompt";
 import ChatPanel, { type ChatMessage } from "./ChatPanel";
 import VideoPanel from "./VideoPanel";
@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
 import { POLL_INTERVAL_MS } from "@/lib/presence";
+import { loadTimeZones } from "@/lib/localtime";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 
 type Conn =
@@ -47,9 +48,8 @@ export default function PulseApp() {
   const toastId = useRef(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
-    null,
-  );
+  const [me, setMe] = useState<MePosition | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -330,11 +330,13 @@ export default function PulseApp() {
   // a fresh id gets a fresh privacy offset that can't be linked to — and
   // averaged with — the old one to narrow down our real location.
   async function rejoin() {
-    if (!myLocation) return;
+    if (!me) return;
     if (connRef.current.kind !== "idle") {
       teardown("You were away too long, so the connection ended.");
     }
-    setSession(await join(myLocation.lat, myLocation.lng));
+    const s = await join(me.real.lat, me.real.lng);
+    setSession(s);
+    setMe({ real: me.real, public: { lat: s.lat, lng: s.lng } });
   }
 
   const processSignalRef = useRef(processSignal);
@@ -389,25 +391,38 @@ export default function PulseApp() {
   }, [session, phase]);
 
   async function handleReady(lat: number, lng: number) {
-    setMyLocation({ lat, lng });
-    setSession(await join(lat, lng));
+    const s = await join(lat, lng);
+    setSession(s);
+    setMe({ real: { lat, lng }, public: { lat: s.lat, lng: s.lng } });
     setPhase("live");
   }
 
-  if (phase === "gate") {
-    return <EntryGate onReady={handleReady} />;
-  }
+  // Local times on the globe need the time-zone table; fetch it up front.
+  useEffect(() => {
+    void loadTimeZones();
+  }, []);
 
   const inChat = conn.kind === "connecting" || conn.kind === "connected";
 
   return (
-    <main className="fixed inset-0 overflow-hidden">
+    <main className="fixed inset-0 overflow-hidden bg-space">
       <WorldMap
         peers={peers}
-        me={myLocation}
-        onPeerClick={requestConnection}
-        canConnect={conn.kind === "idle"}
+        me={me}
+        live={phase === "live"}
+        selectedId={selectedId}
+        // Temporary until Task 5 adds the stranger card: select = request.
+        onSelect={(id) => {
+          setSelectedId(id);
+          if (id) requestConnection(id);
+        }}
       />
+
+      {phase === "gate" && (
+        <div className="absolute inset-0 z-40 flex">
+          <EntryGate onReady={handleReady} />
+        </div>
+      )}
 
       <Toasts toasts={toasts} />
 

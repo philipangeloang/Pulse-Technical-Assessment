@@ -3,10 +3,13 @@ import type { PollResponse, SignalType } from "@/lib/types";
 import { applyPrivacyOffset } from "@/lib/geo";
 
 // A live session: `id` is public (others see it on your dot), `token` is the
-// secret credential for every other call. Kept in memory only.
+// secret credential for every other call. `lat`/`lng` is the public, offset
+// position this session was placed at. Kept in memory only.
 export interface Session {
   id: string;
   token: string;
+  lat: number;
+  lng: number;
 }
 
 // The server no longer knows this session (reaped or left) — re-join.
@@ -26,7 +29,8 @@ export async function join(rawLat: number, rawLng: number): Promise<Session> {
     body: JSON.stringify({ lat, lng }),
   });
   if (!res.ok) throw new Error(`join failed: ${res.status}`);
-  return res.json();
+  const { id, token } = (await res.json()) as { id: string; token: string };
+  return { id, token, lat, lng };
 }
 
 export async function poll(session: Session): Promise<PollResponse> {
