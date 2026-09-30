@@ -28,7 +28,7 @@ export default function ChatSheet({
   connected,
   peer,
   videoActive,
-  videoPending,
+  videoNotice,
   videoBusy,
   onSend,
   onStartVideo,
@@ -39,7 +39,7 @@ export default function ChatSheet({
   connected: boolean;
   peer: PeerDot | undefined;
   videoActive: boolean;
-  videoPending: boolean;
+  videoNotice: string | null;
   videoBusy: boolean;
   onSend: (text: string) => void;
   onStartVideo: () => void;
@@ -107,9 +107,9 @@ export default function ChatSheet({
         </button>
       </header>
 
-      {videoPending && (
+      {videoNotice && (
         <p className="border-b border-white/10 px-4 py-2 text-xs text-glow">
-          Waiting for them to accept video…
+          {videoNotice}
         </p>
       )}
 

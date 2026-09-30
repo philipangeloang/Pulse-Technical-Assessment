@@ -19,7 +19,12 @@ import {
   SessionExpiredError,
   type Session,
 } from "@/lib/api";
-import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
+import {
+  PeerSession,
+  VideoCancelledError,
+  type DescType,
+  type PeerControl,
+} from "@/lib/webrtc";
 import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "@/lib/presence";
 import { loadTimeZones } from "@/lib/localtime";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
@@ -31,7 +36,8 @@ type Conn =
   | { kind: "connecting"; peerId: string }
   | { kind: "connected"; peerId: string };
 
-type VideoState = "none" | "requesting" | "incoming" | "active";
+// "starting": accepted, waiting for our camera (e.g. the permission prompt).
+type VideoState = "none" | "requesting" | "incoming" | "starting" | "active";
 
 // Accepted but the peer-to-peer link never came up (e.g. blocked by a strict
 // NAT — we're STUN-only). Give up instead of spinning on "Connecting…".
@@ -173,17 +179,11 @@ export default function PulseApp() {
         break;
       case "video-accept":
         if (videoRef.current === "requesting" && ps) {
-          resetReveal();
-          ps.startVideo()
-            .then((stream) => {
-              setLocalStream(stream);
-              setVideo("active");
-            })
-            .catch(() => {
-              setVideo("none");
-              ps.sendControl("video-end");
-              showNotice("Camera unavailable.");
-            });
+          openCamera(
+            ps,
+            () => {},
+            () => ps.sendControl("video-end"),
+          );
         }
         break;
       case "video-decline":
@@ -283,17 +283,37 @@ export default function PulseApp() {
 
   function acceptVideo() {
     const ps = peerRef.current;
-    if (!ps) return;
+    if (!ps || videoRef.current !== "incoming") return; // e.g. a double tap
+    openCamera(
+      ps,
+      () => ps.sendControl("video-accept"),
+      () => ps.sendControl("video-decline"),
+    );
+  }
+
+  // Open our (frosted) camera for a video call that's starting. The result
+  // is applied only if this is still the same connection and it still wants
+  // video; if the call ended or video was stopped meanwhile, PeerSession has
+  // already released the camera (VideoCancelledError) and we stay quiet.
+  function openCamera(ps: PeerSession, onReady: () => void, onFail: () => void) {
+    setVideo("starting");
     resetReveal();
+    const stillWanted = () =>
+      peerRef.current === ps && videoRef.current === "starting";
     ps.startVideo()
       .then((stream) => {
+        if (!stillWanted()) {
+          ps.stopVideo();
+          return;
+        }
         setLocalStream(stream);
-        ps.sendControl("video-accept");
         setVideo("active");
+        onReady();
       })
-      .catch(() => {
-        ps.sendControl("video-decline");
+      .catch((err) => {
+        if (err instanceof VideoCancelledError || !stillWanted()) return;
         setVideo("none");
+        onFail();
         showNotice("Camera unavailable.");
       });
   }
@@ -529,7 +549,13 @@ export default function PulseApp() {
           connected={conn.kind === "connected"}
           peer={visiblePeers.find((p) => p.id === conn.peerId)}
           videoActive={video === "active"}
-          videoPending={video === "requesting"}
+          videoNotice={
+            video === "requesting"
+              ? "Waiting for them to accept video…"
+              : video === "starting"
+                ? "Starting your camera…"
+                : null
+          }
           videoBusy={video !== "none"}
           onSend={(text) => {
             peerRef.current?.sendChat(text);

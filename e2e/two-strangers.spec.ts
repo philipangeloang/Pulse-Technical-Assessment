@@ -58,12 +58,14 @@ async function openStranger(
     controllableClock = false,
     hostile = false,
     denyCamera = false,
+    slowCamera = 0,
     ...contextOptions
   }: {
     unreachable?: boolean;
     controllableClock?: boolean;
     hostile?: boolean;
     denyCamera?: boolean;
+    slowCamera?: number;
   } & BrowserContextOptions = {},
 ): Promise<Page> {
   const context = await browser.newContext({
@@ -100,6 +102,19 @@ async function openStranger(
       };
     });
   }
+  // Record every camera stream the app opens (so tests can check the camera
+  // light really goes off), optionally making the camera slow to start.
+  await page.addInitScript((delay: number) => {
+    const w = window as unknown as { __gum: MediaStream[] };
+    w.__gum = [];
+    const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      const stream = await gum(constraints);
+      w.__gum.push(stream);
+      return stream;
+    };
+  }, slowCamera);
   if (denyCamera) {
     await page.addInitScript(() => {
       navigator.mediaDevices.getUserMedia = () =>
@@ -136,6 +151,16 @@ function cspViolations(page: Page): Promise<string[]> {
 }
 
 const remoteVideo = (page: Page) => page.locator("video[data-remote]");
+
+// Camera/mic tracks this page opened that are still live (camera light on).
+function liveCameraTracks(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __gum: MediaStream[] }).__gum
+        .flatMap((s) => s.getTracks())
+        .filter((t) => t.readyState === "live").length,
+  );
+}
 
 // Edge detail (variance of the Laplacian) of the frame the receiver actually
 // decoded — CSS blur doesn't affect drawImage, so this measures what was sent.
@@ -531,6 +556,57 @@ test("living globe: night is drawn and strangers show their local time and sky",
   await expect(card).toContainText(/\d{1,2}:\d{2} [AP]M/);
   await expect(card).toContainText(/night|before dawn|dawn|golden hour|daytime|dusk|late dusk/i);
   await expect(card).toContainText(/~1,100 km away/);
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("video can be started and ended again and again in one chat", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
+
+  for (let round = 1; round <= 3; round++) {
+    const [caller, callee] = round % 2 ? [alice, bob] : [bob, alice];
+    await test.step(`video session ${round}`, async () => {
+      await startVideo(caller, callee);
+      await caller.getByRole("button", { name: "End video" }).click();
+      await expect(caller.getByRole("button", { name: "Start video" })).toBeEnabled();
+      await expect(callee.getByRole("button", { name: "Start video" })).toBeEnabled();
+    });
+  }
+  await expect.poll(() => liveCameraTracks(alice)).toBe(0);
+  await expect.poll(() => liveCameraTracks(bob)).toBe(0);
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("the camera is released if video is double-accepted or cancelled mid-start", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA, { slowCamera: 1500 });
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
+
+  await test.step("a double-tapped Accept opens the camera once; ending releases it", async () => {
+    await alice.getByRole("button", { name: "Start video" }).click();
+    await bob.getByRole("button", { name: "Accept" }).dblclick();
+    await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
+    await bob.getByRole("button", { name: "End video" }).click();
+    await expect.poll(() => liveCameraTracks(bob)).toBe(0);
+  });
+
+  await test.step("ending the chat while the camera starts releases it quietly", async () => {
+    await alice.getByRole("button", { name: "Start video" }).click();
+    await bob.getByRole("button", { name: "Accept" }).click();
+    await alice.getByRole("button", { name: "End chat" }).click();
+    await bob.waitForTimeout(2500); // the slow camera resolves after the chat ended
+    expect(await liveCameraTracks(bob)).toBe(0);
+    await expect(bob.getByText(/camera unavailable/i)).toHaveCount(0);
+  });
+
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
 });

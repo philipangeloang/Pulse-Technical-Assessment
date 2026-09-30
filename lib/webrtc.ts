@@ -37,6 +37,9 @@ const ICE_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+// The camera start was abandoned (call ended / video stopped meanwhile).
+export class VideoCancelledError extends Error {}
+
 export class PeerSession {
   private pc: RTCPeerConnection;
   private dc: RTCDataChannel | null = null;
@@ -44,6 +47,9 @@ export class PeerSession {
   private makingOffer = false;
   private ignoreOffer = false;
   private camera: FrostedCamera | null = null;
+  private starting: Promise<MediaStream> | null = null;
+  private videoEpoch = 0;
+  private videoSenders: RTCRtpSender[] = [];
   private closed = false;
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -194,18 +200,41 @@ export class PeerSession {
 
   // Soft Reveal: the peer receives the frosted canvas stream, never the
   // camera itself. Returns that stream (it doubles as the honest self-view).
-  async startVideo(): Promise<MediaStream> {
-    if (!this.camera) {
-      const raw = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      this.camera = new FrostedCamera(raw);
-      for (const track of this.camera.stream.getTracks()) {
-        this.pc.addTrack(track, this.camera.stream);
-      }
+  // Concurrent calls share one camera start. If the call ends or video is
+  // stopped while the permission prompt is up, the camera is released and
+  // this rejects with VideoCancelledError.
+  startVideo(): Promise<MediaStream> {
+    if (this.camera) return Promise.resolve(this.camera.stream);
+    this.starting ??= this.openCamera().finally(() => {
+      this.starting = null;
+    });
+    return this.starting;
+  }
+
+  private async openCamera(): Promise<MediaStream> {
+    const epoch = this.videoEpoch;
+    const raw = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+    if (this.closed || epoch !== this.videoEpoch) {
+      for (const track of raw.getTracks()) track.stop();
+      throw new VideoCancelledError();
     }
-    return this.camera.stream;
+    let camera: FrostedCamera | null = null;
+    try {
+      camera = new FrostedCamera(raw);
+      for (const track of camera.stream.getTracks()) {
+        this.videoSenders.push(this.pc.addTrack(track, camera.stream));
+      }
+      this.camera = camera;
+      return camera.stream;
+    } catch (err) {
+      if (camera) camera.stop();
+      else for (const track of raw.getTracks()) track.stop();
+      this.stopSenders();
+      throw err;
+    }
   }
 
   setRevealed(revealed: boolean) {
@@ -219,16 +248,26 @@ export class PeerSession {
   }
 
   stopVideo() {
+    this.videoEpoch++; // cancels a camera start still in flight
     if (!this.camera) return;
     this.camera.stop();
-    for (const sender of this.pc.getSenders()) {
-      if (sender.track) {
-        try {
-          this.pc.removeTrack(sender);
-        } catch {}
-      }
-    }
     this.camera = null;
+    this.stopSenders();
+  }
+
+  // Stop (not just remove) our video transceivers: removeTrack leaves the
+  // m-lines behind, so each video session grew the SDP until offers blew
+  // past the server's size cap and the third session could never connect.
+  private stopSenders() {
+    for (const sender of this.videoSenders) {
+      const transceiver = this.pc
+        .getTransceivers()
+        .find((t) => t.sender === sender);
+      try {
+        transceiver?.stop();
+      } catch {}
+    }
+    this.videoSenders = [];
   }
 
   close() {
