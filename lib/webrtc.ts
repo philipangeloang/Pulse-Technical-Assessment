@@ -1,9 +1,13 @@
+import { FrostedCamera } from "@/lib/frost";
+
 export type DescType = "offer" | "answer" | "ice";
 export type PeerControl =
   | "video-request"
   | "video-accept"
   | "video-decline"
-  | "video-end";
+  | "video-end"
+  | "reveal"
+  | "frost";
 
 interface PeerCallbacks {
   onSignal: (type: DescType, payload: string) => void;
@@ -19,6 +23,8 @@ const CONTROLS: readonly string[] = [
   "video-accept",
   "video-decline",
   "video-end",
+  "reveal",
+  "frost",
 ];
 
 export const MAX_CHAT_LENGTH = 1000;
@@ -37,7 +43,7 @@ export class PeerSession {
   private readonly polite: boolean;
   private makingOffer = false;
   private ignoreOffer = false;
-  private localStream: MediaStream | null = null;
+  private camera: FrostedCamera | null = null;
   private closed = false;
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -186,31 +192,43 @@ export class PeerSession {
     }
   }
 
+  // Soft Reveal: the peer receives the frosted canvas stream, never the
+  // camera itself. Returns that stream (it doubles as the honest self-view).
   async startVideo(): Promise<MediaStream> {
-    if (!this.localStream) {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
+    if (!this.camera) {
+      const raw = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
-      for (const track of this.localStream.getTracks()) {
-        this.pc.addTrack(track, this.localStream);
+      this.camera = new FrostedCamera(raw);
+      for (const track of this.camera.stream.getTracks()) {
+        this.pc.addTrack(track, this.camera.stream);
       }
     }
-    return this.localStream;
+    return this.camera.stream;
+  }
+
+  setRevealed(revealed: boolean) {
+    if (!this.camera) return;
+    this.camera.setRevealed(revealed);
+    this.sendControl(revealed ? "reveal" : "frost");
+  }
+
+  setMicMuted(muted: boolean) {
+    this.camera?.setMicMuted(muted);
   }
 
   stopVideo() {
-    if (this.localStream) {
-      for (const track of this.localStream.getTracks()) track.stop();
-      for (const sender of this.pc.getSenders()) {
-        if (sender.track) {
-          try {
-            this.pc.removeTrack(sender);
-          } catch {}
-        }
+    if (!this.camera) return;
+    this.camera.stop();
+    for (const sender of this.pc.getSenders()) {
+      if (sender.track) {
+        try {
+          this.pc.removeTrack(sender);
+        } catch {}
       }
-      this.localStream = null;
     }
+    this.camera = null;
   }
 
   close() {

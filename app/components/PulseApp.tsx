@@ -9,7 +9,7 @@ import { Video } from "lucide-react";
 import WorldMap, { type MePosition } from "./WorldMap";
 import ConnectionPrompt from "./ConnectionPrompt";
 import ChatSheet, { type ChatMessage } from "./ChatSheet";
-import VideoPanel from "./VideoPanel";
+import VideoStage from "./VideoStage";
 import Toasts, { type Toast } from "./Toasts";
 import {
   join,
@@ -51,6 +51,19 @@ export default function PulseApp() {
   const toastId = useRef(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  // Soft Reveal: what I show (revealedMe), what they've shown (remoteRevealed)
+  // and whether I've chosen to look (showRemote). Every call starts frosted.
+  const [revealedMe, setRevealedMe] = useState(false);
+  const [remoteRevealed, setRemoteRevealed] = useState(false);
+  const [showRemote, setShowRemote] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
+
+  function resetReveal() {
+    setRevealedMe(false);
+    setRemoteRevealed(false);
+    setShowRemote(false);
+    setMicMuted(false);
+  }
   const [me, setMe] = useState<MePosition | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Skip & block: hidden and auto-declined for the rest of this visit.
@@ -113,6 +126,7 @@ export default function PulseApp() {
     setLocalStream(null);
     setRemoteStream(null);
     setVideo("none");
+    resetReveal();
     setMessages([]);
     setConn({ kind: "idle" });
     if (message) showNotice(message);
@@ -159,6 +173,7 @@ export default function PulseApp() {
         break;
       case "video-accept":
         if (videoRef.current === "requesting" && ps) {
+          resetReveal();
           ps.startVideo()
             .then((stream) => {
               setLocalStream(stream);
@@ -182,6 +197,14 @@ export default function PulseApp() {
         setLocalStream(null);
         setRemoteStream(null);
         setVideo("none");
+        resetReveal();
+        break;
+      case "reveal":
+        setRemoteRevealed(true);
+        break;
+      case "frost":
+        setRemoteRevealed(false);
+        setShowRemote(false);
         break;
     }
   }
@@ -261,6 +284,7 @@ export default function PulseApp() {
   function acceptVideo() {
     const ps = peerRef.current;
     if (!ps) return;
+    resetReveal();
     ps.startVideo()
       .then((stream) => {
         setLocalStream(stream);
@@ -286,6 +310,19 @@ export default function PulseApp() {
     setLocalStream(null);
     setRemoteStream(null);
     setVideo("none");
+    resetReveal();
+  }
+
+  function toggleReveal() {
+    const next = !revealedMe;
+    peerRef.current?.setRevealed(next);
+    setRevealedMe(next);
+  }
+
+  function toggleMic() {
+    const next = !micMuted;
+    peerRef.current?.setMicMuted(next);
+    setMicMuted(next);
   }
 
   function processSignal(sig: SignalMsg) {
@@ -508,7 +545,7 @@ export default function PulseApp() {
         <ConnectionPrompt
           icon={<Video className="h-6 w-6" aria-hidden />}
           title="Start a video call?"
-          subtitle="The stranger would like to turn on video."
+          subtitle="You'll both start frosted — reveal yourself only when you're ready."
           acceptLabel="Accept"
           declineLabel="Not now"
           onAccept={acceptVideo}
@@ -517,9 +554,16 @@ export default function PulseApp() {
       )}
 
       {video === "active" && (
-        <VideoPanel
+        <VideoStage
           localStream={localStream}
           remoteStream={remoteStream}
+          revealedMe={revealedMe}
+          remoteRevealed={remoteRevealed}
+          showRemote={showRemote}
+          micMuted={micMuted}
+          onToggleReveal={toggleReveal}
+          onShowRemote={() => remoteRevealed && setShowRemote(true)}
+          onToggleMic={toggleMic}
           onEnd={endVideo}
         />
       )}

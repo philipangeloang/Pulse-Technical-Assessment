@@ -112,7 +112,7 @@ them).
 directly. `lib/frost.ts`:
 
 1. Plays the camera track in a hidden `<video>`.
-2. Each frame (`requestVideoFrameCallback`, falling back to `requestAnimationFrame`)
+2. Each animation frame (`requestAnimationFrame`, which also pauses in hidden tabs)
    is drawn to an output canvas (max 640 px wide, camera aspect).
    - **Frosted:** draw to a 32 px-wide canvas, then 128 px, then upscale to the
      output with high-quality smoothing — a soft frosted-glass image that works

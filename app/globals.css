@@ -44,6 +44,11 @@ body {
   backdrop-filter: blur(20px) saturate(140%);
 }
 
+/* Darker glass for anything floating over live video, which can be bright. */
+.glass.is-dark {
+  background: linear-gradient(160deg, rgb(10 15 31 / 0.78), rgb(5 7 13 / 0.7));
+}
+
 .btn-ember,
 .btn-ghost {
   display: inline-flex;

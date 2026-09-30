@@ -57,11 +57,13 @@ async function openStranger(
     unreachable = false,
     controllableClock = false,
     hostile = false,
+    denyCamera = false,
     ...contextOptions
   }: {
     unreachable?: boolean;
     controllableClock?: boolean;
     hostile?: boolean;
+    denyCamera?: boolean;
   } & BrowserContextOptions = {},
 ): Promise<Page> {
   const context = await browser.newContext({
@@ -98,6 +100,12 @@ async function openStranger(
       };
     });
   }
+  if (denyCamera) {
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = () =>
+        Promise.reject(new DOMException("denied", "NotAllowedError"));
+    });
+  }
   if (unreachable) {
     // Simulate a network where no ICE path works: drop all remote candidates.
     await page.addInitScript(() => {
@@ -125,6 +133,49 @@ function distanceKm(a: LatLng, b: LatLng): number {
 
 function cspViolations(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __csp: string[] }).__csp);
+}
+
+const remoteVideo = (page: Page) => page.locator("video[data-remote]");
+
+// Edge detail (variance of the Laplacian) of the frame the receiver actually
+// decoded — CSS blur doesn't affect drawImage, so this measures what was sent.
+async function remoteSharpness(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const v = document.querySelector("video[data-remote]") as HTMLVideoElement;
+    const w = 160;
+    const h = 120;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(v, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const g = (x: number, y: number) => {
+      const i = (y * w + x) * 4;
+      return 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    };
+    let sum = 0;
+    let sum2 = 0;
+    let n = 0;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const lap = 4 * g(x, y) - g(x - 1, y) - g(x + 1, y) - g(x, y - 1) - g(x, y + 1);
+        sum += lap;
+        sum2 += lap * lap;
+        n++;
+      }
+    }
+    const mean = sum / n;
+    return sum2 / n - mean * mean;
+  });
+}
+
+async function startVideo(caller: Page, callee: Page) {
+  await caller.getByRole("button", { name: "Start video" }).click();
+  await expect(callee.getByText(/start a video call\?/i)).toBeVisible();
+  await callee.getByRole("button", { name: "Accept" }).click();
+  await expect.poll(() => remoteVideoIsPlaying(caller)).toBe(true);
+  await expect.poll(() => remoteVideoIsPlaying(callee)).toBe(true);
 }
 
 async function remoteVideoIsPlaying(page: Page): Promise<boolean> {
@@ -173,10 +224,15 @@ test("two strangers can find each other, chat, video call and leave", async ({
 
   await test.step("video call starts with remote video on both sides", async () => {
     await alice.getByRole("button", { name: "Start video" }).click();
-    await expect(bob.getByText(/start a video call?/i)).toBeVisible();
+    await expect(bob.getByText(/start a video call\?/i)).toBeVisible();
     await bob.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
     await expect.poll(() => remoteVideoIsPlaying(bob)).toBe(true);
+  });
+
+  await test.step("video starts frosted with the Soft Reveal controls", async () => {
+    await expect(alice.getByRole("button", { name: "Reveal me" })).toBeVisible();
+    await expect(bob.getByText(/they.re frosted/i)).toBeVisible();
   });
 
   await test.step("ending video returns both to chat", async () => {
@@ -188,7 +244,7 @@ test("two strangers can find each other, chat, video call and leave", async ({
   await test.step("video can be restarted, from the other side", async () => {
     await expect(bob.getByRole("button", { name: "Start video" })).toBeEnabled();
     await bob.getByRole("button", { name: "Start video" }).click();
-    await expect(alice.getByText(/start a video call?/i)).toBeVisible();
+    await expect(alice.getByText(/start a video call\?/i)).toBeVisible();
     await alice.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
     await expect.poll(() => remoteVideoIsPlaying(bob)).toBe(true);
@@ -402,6 +458,64 @@ test("on a phone, long messages wrap and nothing scrolls sideways", async ({ bro
     const box = await page.getByText(long).boundingBox();
     expect(box!.x + box!.width).toBeLessThanOrEqual(390);
   }
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("soft reveal: frames stay frosted at the source until the sender reveals", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
+  await startVideo(alice, bob);
+
+  await bob.waitForTimeout(1500);
+  const frosted = await remoteSharpness(bob);
+  await expect(bob.getByText(/they.re frosted/i)).toBeVisible();
+  await expect(bob.getByRole("button", { name: "Show them" })).toHaveCount(0);
+
+  await alice.getByRole("button", { name: "Reveal me" }).click();
+  // Bob is told — but still sees her blurred until he chooses to look.
+  await expect(bob.getByRole("button", { name: "Show them" })).toBeVisible();
+  await expect(remoteVideo(bob)).toHaveCSS("filter", /blur/);
+  // The frames themselves are now clear.
+  await expect
+    .poll(() => remoteSharpness(bob), { timeout: 10_000 })
+    .toBeGreaterThan(frosted * 4);
+
+  const revealed = await remoteSharpness(bob);
+  await bob.getByRole("button", { name: "Show them" }).click();
+  await expect(remoteVideo(bob)).toHaveCSS("filter", "none");
+
+  // Ending and restarting video starts frosted again, on both sides.
+  await alice.getByRole("button", { name: "End video" }).click();
+  await expect(bob.getByPlaceholder(/type a message/i)).toBeVisible();
+  await startVideo(bob, alice);
+  await expect(bob.getByText(/they.re frosted/i)).toBeVisible();
+  await expect(remoteVideo(bob)).toHaveCSS("filter", /blur/);
+  await bob.waitForTimeout(1500);
+  // Measured: frosted ~2–5, revealed ~16–26 — the midpoint separates them.
+  expect(await remoteSharpness(bob)).toBeLessThan((frosted + revealed) / 2);
+
+  await alice.close({ runBeforeUnload: true });
+  await bob.close({ runBeforeUnload: true });
+});
+
+test("a denied camera declines the video cleanly and keeps the chat", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA, { denyCamera: true });
+  await sayHi(alice, bob);
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
+
+  await alice.getByRole("button", { name: "Start video" }).click();
+  await bob.getByRole("button", { name: "Accept" }).click();
+  await expect(bob.getByText(/camera unavailable/i)).toBeVisible();
+  await expect(alice.getByText(/video declined/i)).toBeVisible();
+  await expect(alice.getByRole("button", { name: "Start video" })).toBeEnabled();
+  await expect(bob.getByPlaceholder(/type a message/i)).toBeEnabled();
+
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
 });
