@@ -6,6 +6,7 @@ import WorldMap from "./WorldMap";
 import ConnectionPrompt from "./ConnectionPrompt";
 import ChatPanel, { type ChatMessage } from "./ChatPanel";
 import VideoPanel from "./VideoPanel";
+import Toasts, { type Toast } from "./Toasts";
 import {
   join,
   leave,
@@ -42,7 +43,8 @@ export default function PulseApp() {
   };
   const [peers, setPeers] = useState<PeerDot[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
@@ -80,8 +82,12 @@ export default function PulseApp() {
   }
 
   function showNotice(text: string) {
-    setNotice(text);
-    window.setTimeout(() => setNotice(null), 3500);
+    const id = toastId.current++;
+    setToasts((prev) => [...prev.slice(-2), { id, text }]);
+    window.setTimeout(
+      () => setToasts((prev) => prev.filter((t) => t.id !== id)),
+      4000,
+    );
   }
 
   function addMessage(mine: boolean, text: string) {
@@ -403,11 +409,7 @@ export default function PulseApp() {
         canConnect={conn.kind === "idle"}
       />
 
-      {notice && (
-        <div className="absolute left-1/2 top-20 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          {notice}
-        </div>
-      )}
+      <Toasts toasts={toasts} />
 
       {conn.kind === "requesting" && (
         <div className="absolute left-1/2 top-20 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
