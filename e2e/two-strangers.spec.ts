@@ -5,7 +5,7 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import { randomClientIp } from "./helpers";
+import { useClientIp } from "./helpers";
 
 // The full Pulse happy path with two real browsers: both appear on the map,
 // one taps the other, they chat over the WebRTC data channel, upgrade to
@@ -49,8 +49,8 @@ async function openStranger(
   const context = await browser.newContext({
     geolocation,
     permissions: ["geolocation", "camera", "microphone"],
-    extraHTTPHeaders: { "x-forwarded-for": randomClientIp() },
   });
+  await useClientIp(context);
   const page = await context.newPage();
   // Record Content-Security-Policy violations so tests can assert the
   // strict CSP doesn't break the map, video, or Next's own scripts.
@@ -242,8 +242,8 @@ test("the raw location never leaves the browser", async ({ browser }) => {
   const context = await browser.newContext({
     geolocation: MANILA,
     permissions: ["geolocation"],
-    extraHTTPHeaders: { "x-forwarded-for": randomClientIp() },
   });
+  await useClientIp(context);
   const page = await context.newPage();
   await page.goto("/");
   const joinRequest = page.waitForRequest((r) => r.url().endsWith("/api/join"));
