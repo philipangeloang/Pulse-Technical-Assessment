@@ -567,7 +567,8 @@ test("video can be started and ended again and again in one chat", async ({ brow
   await bob.getByRole("button", { name: "Accept" }).click();
   await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
 
-  for (let round = 1; round <= 3; round++) {
+  // Back to back, alternating callers: renegotiation races show up here.
+  for (let round = 1; round <= 6; round++) {
     const [caller, callee] = round % 2 ? [alice, bob] : [bob, alice];
     await test.step(`video session ${round}`, async () => {
       await startVideo(caller, callee);

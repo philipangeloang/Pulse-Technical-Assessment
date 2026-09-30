@@ -46,6 +46,9 @@ export class PeerSession {
   private readonly polite: boolean;
   private makingOffer = false;
   private ignoreOffer = false;
+  private settingRemoteAnswer = false;
+  private remoteTracks: MediaStreamTrack[] = [];
+  private signalQueue: Promise<void> = Promise.resolve();
   private camera: FrostedCamera | null = null;
   private starting: Promise<MediaStream> | null = null;
   private videoEpoch = 0;
@@ -72,13 +75,21 @@ export class PeerSession {
         if (this.pc.localDescription) {
           this.cb.onSignal("offer", JSON.stringify(this.pc.localDescription));
         }
+      } catch {
+        // superseded (e.g. a remote offer arrived first) — negotiation retries
       } finally {
         this.makingOffer = false;
       }
     };
 
-    this.pc.ontrack = ({ streams }) => {
-      this.cb.onRemoteStream(streams[0] ?? null);
+    // Build our own remote stream from the received tracks (one per kind).
+    // The browser's own stream object (event.streams[0]) can have the tracks
+    // pulled out of it again by a later description in a renegotiation
+    // glare, which left the video element with an empty stream.
+    this.pc.ontrack = ({ track }) => {
+      const tracks = this.remoteTracks.filter((t) => t.kind !== track.kind);
+      this.remoteTracks = [...tracks, track];
+      this.cb.onRemoteStream(new MediaStream(this.remoteTracks));
     };
 
     this.pc.onconnectionstatechange = () => {
@@ -132,11 +143,21 @@ export class PeerSession {
 
   // Signals come from a stranger (relayed by the server); anything malformed
   // or out of order is dropped instead of surfacing as an unhandled error.
-  async handleSignal(type: DescType, payload: string) {
-    if (this.closed) return;
-    try {
-      await this.applySignal(type, JSON.parse(payload));
-    } catch {}
+  //
+  // They're applied strictly one at a time, in arrival order. A poll often
+  // delivers "answer, offer" together; handled concurrently, the offer was
+  // judged while the answer was still being applied, mistaken for a
+  // collision and ignored — and renegotiation ping-ponged forever (the
+  // "Waiting for their camera…" hang when starting video again).
+  handleSignal(type: DescType, payload: string): Promise<void> {
+    const run = async () => {
+      if (this.closed) return;
+      try {
+        await this.applySignal(type, JSON.parse(payload));
+      } catch {}
+    };
+    this.signalQueue = this.signalQueue.then(run, run);
+    return this.signalQueue;
   }
 
   private async applySignal(type: DescType, data: unknown) {
@@ -153,14 +174,22 @@ export class PeerSession {
       return;
     }
 
+    // "Perfect negotiation": an offer collides only if we're mid-offer
+    // ourselves (an answer we're applying counts as stable).
     const desc = data as RTCSessionDescriptionInit;
-    const offerCollision =
-      desc.type === "offer" &&
-      (this.makingOffer || this.pc.signalingState !== "stable");
+    const readyForOffer =
+      !this.makingOffer &&
+      (this.pc.signalingState === "stable" || this.settingRemoteAnswer);
+    const offerCollision = desc.type === "offer" && !readyForOffer;
     this.ignoreOffer = !this.polite && offerCollision;
     if (this.ignoreOffer) return;
 
-    await this.pc.setRemoteDescription(desc);
+    this.settingRemoteAnswer = desc.type === "answer";
+    try {
+      await this.pc.setRemoteDescription(desc);
+    } finally {
+      this.settingRemoteAnswer = false;
+    }
     // Candidates can only be added once a remote description exists; drain
     // any that arrived early (including ones queued while the await above
     // was in flight — they typically land in the same poll batch).
@@ -249,6 +278,7 @@ export class PeerSession {
 
   stopVideo() {
     this.videoEpoch++; // cancels a camera start still in flight
+    this.remoteTracks = [];
     if (!this.camera) return;
     this.camera.stop();
     this.camera = null;
