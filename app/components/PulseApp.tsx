@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import EntryGate from "./EntryGate";
+import EntryOverlay from "./EntryOverlay";
+import Hud from "./Hud";
+import DotCard from "./DotCard";
+import IncomingCall from "./IncomingCall";
+import { Video } from "lucide-react";
 import WorldMap, { type MePosition } from "./WorldMap";
 import ConnectionPrompt from "./ConnectionPrompt";
 import ChatPanel, { type ChatMessage } from "./ChatPanel";
@@ -16,7 +20,7 @@ import {
   type Session,
 } from "@/lib/api";
 import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
-import { POLL_INTERVAL_MS } from "@/lib/presence";
+import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "@/lib/presence";
 import { loadTimeZones } from "@/lib/localtime";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 
@@ -29,7 +33,6 @@ type Conn =
 
 type VideoState = "none" | "requesting" | "incoming" | "active";
 
-const REQUEST_TIMEOUT_MS = 30_000;
 // Accepted but the peer-to-peer link never came up (e.g. blocked by a strict
 // NAT — we're STUN-only). Give up instead of spinning on "Connecting…".
 const CONNECT_TIMEOUT_MS = 25_000;
@@ -50,6 +53,8 @@ export default function PulseApp() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [me, setMe] = useState<MePosition | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const pollFailures = useRef(0);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -206,6 +211,7 @@ export default function PulseApp() {
     const peerId = connRef.current.peerId;
     startPeer(peerId, false);
     setConn({ kind: "connecting", peerId });
+    setSelectedId(null);
     void signal(peerId, "accept").then((ok) => {
       // The request was withdrawn (cancelled, timed out, or they left) just
       // as we accepted.
@@ -282,6 +288,7 @@ export default function PulseApp() {
           if (pendingTimer.current) clearTimeout(pendingTimer.current);
           startPeer(sig.fromId, true);
           setConn({ kind: "connecting", peerId: sig.fromId });
+          setSelectedId(null);
         }
         break;
       }
@@ -357,8 +364,14 @@ export default function PulseApp() {
         const data = await poll(session);
         if (!active) return;
         setPeers(data.peers);
+        pollFailures.current = 0;
+        setReconnecting(false);
         for (const s of data.signals) processSignalRef.current(s);
       } catch (err) {
+        if (!(err instanceof SessionExpiredError)) {
+          pollFailures.current++;
+          if (pollFailures.current >= 3) setReconnecting(true);
+        }
         if (active && err instanceof SessionExpiredError) {
           try {
             // Re-joining swaps the session, which restarts this effect.
@@ -403,6 +416,9 @@ export default function PulseApp() {
   }, []);
 
   const inChat = conn.kind === "connecting" || conn.kind === "connected";
+  const selectedPeer = peers.find((p) => p.id === selectedId);
+  const requestingSelected =
+    conn.kind === "requesting" && conn.peerId === selectedId;
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-space">
@@ -411,38 +427,39 @@ export default function PulseApp() {
         me={me}
         live={phase === "live"}
         selectedId={selectedId}
-        // Temporary until Task 5 adds the stranger card: select = request.
-        onSelect={(id) => {
-          setSelectedId(id);
-          if (id) requestConnection(id);
-        }}
+        onSelect={setSelectedId}
       />
 
-      {phase === "gate" && (
-        <div className="absolute inset-0 z-40 flex">
-          <EntryGate onReady={handleReady} />
-        </div>
+      {phase === "gate" ? (
+        <EntryOverlay onReady={handleReady} />
+      ) : (
+        <Hud
+          peers={peers}
+          reconnecting={reconnecting}
+          showHint={conn.kind === "idle" && !selectedPeer}
+        />
       )}
 
       <Toasts toasts={toasts} />
 
-      {conn.kind === "requesting" && (
-        <div className="absolute left-1/2 top-20 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          <span>Requesting connection…</span>
-          <button
-            onClick={cancelRequest}
-            className="rounded-full bg-zinc-700 px-3 py-1 text-xs hover:bg-zinc-600"
-          >
-            Cancel
-          </button>
-        </div>
+      {selectedPeer && !inChat && (
+        <DotCard
+          peer={selectedPeer}
+          from={me?.real ?? null}
+          requesting={requestingSelected}
+          canConnect={conn.kind === "idle"}
+          onSayHi={() => requestConnection(selectedPeer.id)}
+          onCancel={cancelRequest}
+          onClose={() => {
+            if (requestingSelected) cancelRequest();
+            setSelectedId(null);
+          }}
+        />
       )}
 
       {conn.kind === "incoming" && (
-        <ConnectionPrompt
-          title="A stranger wants to connect"
-          acceptLabel="Accept"
-          declineLabel="Decline"
+        <IncomingCall
+          peer={peers.find((p) => p.id === conn.peerId)}
           onAccept={acceptIncoming}
           onDecline={declineIncoming}
         />
@@ -463,17 +480,18 @@ export default function PulseApp() {
       )}
 
       {video === "requesting" && (
-        <div className="absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          Waiting for stranger to accept video…
+        <div className="glass absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full px-4 py-2 text-sm text-ink">
+          Waiting for them to accept video…
         </div>
       )}
 
       {video === "incoming" && (
         <ConnectionPrompt
-          title="Start video call?"
-          subtitle="The stranger wants to turn on video."
+          icon={<Video className="h-6 w-6" aria-hidden />}
+          title="Start a video call?"
+          subtitle="The stranger would like to turn on video."
           acceptLabel="Accept"
-          declineLabel="Decline"
+          declineLabel="Not now"
           onAccept={acceptVideo}
           onDecline={declineVideo}
         />

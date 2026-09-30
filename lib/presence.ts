@@ -8,3 +8,6 @@ export const SIGNAL_TTL_MS = 60_000;
 
 // Client poll interval. Kept here so client + server reason about the same cadence.
 export const POLL_INTERVAL_MS = 1_500;
+
+// How long a connection request waits for an answer before giving up.
+export const REQUEST_TIMEOUT_MS = 30_000;

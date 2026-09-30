@@ -39,8 +39,9 @@ body {
   box-shadow:
     0 24px 60px -24px rgb(0 0 0 / 0.75),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
+  /* Written unprefixed only: Lightning CSS adds -webkit- for Safari itself,
+     and given both it kept just the prefixed one (which Chrome ignores). */
   backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 
 .btn-ember,

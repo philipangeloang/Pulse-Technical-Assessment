@@ -11,8 +11,10 @@ import { useClientIp } from "./helpers";
 // one taps the other, they chat over the WebRTC data channel, upgrade to
 // video, hang up, and a closed tab disappears from the other user's map.
 
-const MANILA = { latitude: 14.5995, longitude: 120.9842 };
-const HONG_KONG = { latitude: 22.3193, longitude: 114.1694 };
+// Two Pacific islands ~1,140 km apart — far from where real users (who share
+// the database in dev) are likely to be, so their dots never overlap ours.
+const PAPEETE = { latitude: -17.5516, longitude: -149.5585 };
+const AVARUA = { latitude: -21.2075, longitude: -159.7755 };
 
 // The session id each page joined as (updated when it re-joins), read from
 // its own /api/join response. Tests look up *that* stranger's dot, so they
@@ -39,6 +41,12 @@ async function sessionId(page: Page): Promise<string> {
 // `target`'s dot as it appears on `viewer`'s map.
 async function dotOf(viewer: Page, target: Page): Promise<Locator> {
   return viewer.locator(`.pulse-dot[data-peer-id="${await sessionId(target)}"]`);
+}
+
+// Tap a stranger's dot, then "Say hi" on their card.
+async function sayHi(viewer: Page, target: Page) {
+  await (await dotOf(viewer, target)).click();
+  await viewer.getByRole("button", { name: "Say hi" }).click();
 }
 
 async function openStranger(
@@ -87,7 +95,7 @@ async function openStranger(
   }
   trackSession(page);
   await page.goto("/");
-  await page.getByRole("button", { name: /enter pulse/i }).click();
+  await page.getByRole("button", { name: /drop in/i }).click();
   return page;
 }
 
@@ -126,8 +134,8 @@ async function remoteVideoIsPlaying(page: Page): Promise<boolean> {
 test("two strangers can find each other, chat, video call and leave", async ({
   browser,
 }) => {
-  const alice = await openStranger(browser, MANILA);
-  const bob = await openStranger(browser, HONG_KONG);
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
 
   await test.step("each sees the other's dot", async () => {
     await expect(await dotOf(alice, bob)).toHaveCount(1);
@@ -135,26 +143,26 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await test.step("alice taps bob, bob accepts, both connect", async () => {
-    await (await dotOf(alice, bob)).click();
-    await expect(bob.getByText(/wants to connect/i)).toBeVisible();
+    await sayHi(alice, bob);
+    await expect(bob.getByText(/wants to talk/i)).toBeVisible();
     await bob.getByRole("button", { name: "Accept" }).click();
     await expect(alice.getByText("Connected", { exact: true })).toBeVisible();
     await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
   });
 
   await test.step("chat messages arrive in both directions", async () => {
-    await alice.getByPlaceholder(/type a message/i).fill("hello from manila");
+    await alice.getByPlaceholder(/type a message/i).fill("hello from papeete");
     await alice.getByRole("button", { name: "Send" }).click();
-    await expect(bob.getByText("hello from manila")).toBeVisible();
+    await expect(bob.getByText("hello from papeete")).toBeVisible();
 
-    await bob.getByPlaceholder(/type a message/i).fill("hi from hong kong");
+    await bob.getByPlaceholder(/type a message/i).fill("hi from avarua");
     await bob.getByRole("button", { name: "Send" }).click();
-    await expect(alice.getByText("hi from hong kong")).toBeVisible();
+    await expect(alice.getByText("hi from avarua")).toBeVisible();
   });
 
   await test.step("video call starts with remote video on both sides", async () => {
     await alice.getByRole("button", { name: "Video" }).click();
-    await expect(bob.getByText(/start video call/i)).toBeVisible();
+    await expect(bob.getByText(/start a video call?/i)).toBeVisible();
     await bob.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
     await expect.poll(() => remoteVideoIsPlaying(bob)).toBe(true);
@@ -169,7 +177,7 @@ test("two strangers can find each other, chat, video call and leave", async ({
   await test.step("video can be restarted, from the other side", async () => {
     await expect(bob.getByRole("button", { name: "Video" })).toBeEnabled();
     await bob.getByRole("button", { name: "Video" }).click();
-    await expect(alice.getByText(/start video call/i)).toBeVisible();
+    await expect(alice.getByText(/start a video call?/i)).toBeVisible();
     await alice.getByRole("button", { name: "Accept" }).click();
     await expect.poll(() => remoteVideoIsPlaying(alice)).toBe(true);
     await expect.poll(() => remoteVideoIsPlaying(bob)).toBe(true);
@@ -197,8 +205,8 @@ test("two strangers can find each other, chat, video call and leave", async ({
   });
 
   await test.step("they can connect a second time", async () => {
-    await (await dotOf(bob, alice)).click();
-    await expect(alice.getByText(/wants to connect/i)).toBeVisible();
+    await sayHi(bob, alice);
+    await expect(alice.getByText(/wants to talk/i)).toBeVisible();
     await alice.getByRole("button", { name: "Accept" }).click();
     await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
   });
@@ -213,10 +221,10 @@ test("two strangers can find each other, chat, video call and leave", async ({
 });
 
 test("a hostile peer can't flood or bloat the chat", async ({ browser }) => {
-  const mallory = await openStranger(browser, MANILA, { hostile: true });
-  const bob = await openStranger(browser, HONG_KONG);
+  const mallory = await openStranger(browser, PAPEETE, { hostile: true });
+  const bob = await openStranger(browser, AVARUA);
 
-  await (await dotOf(mallory, bob)).click();
+  await sayHi(mallory, bob);
   await bob.getByRole("button", { name: "Accept" }).click();
   await expect(bob.getByText("Connected", { exact: true })).toBeVisible();
 
@@ -240,17 +248,17 @@ test("a hostile peer can't flood or bloat the chat", async ({ browser }) => {
 
 test("the raw location never leaves the browser", async ({ browser }) => {
   const context = await browser.newContext({
-    geolocation: MANILA,
+    geolocation: PAPEETE,
     permissions: ["geolocation"],
   });
   await useClientIp(context);
   const page = await context.newPage();
   await page.goto("/");
   const joinRequest = page.waitForRequest((r) => r.url().endsWith("/api/join"));
-  await page.getByRole("button", { name: /enter pulse/i }).click();
+  await page.getByRole("button", { name: /drop in/i }).click();
   const sent = (await joinRequest).postDataJSON();
 
-  const km = distanceKm(MANILA, { latitude: sent.lat, longitude: sent.lng });
+  const km = distanceKm(PAPEETE, { latitude: sent.lat, longitude: sent.lng });
   expect(km).toBeGreaterThan(0.95);
   expect(km).toBeLessThan(3.05);
 
@@ -260,8 +268,8 @@ test("the raw location never leaves the browser", async ({ browser }) => {
 test("a tab frozen in the background comes back on the map", async ({
   browser,
 }) => {
-  const alice = await openStranger(browser, MANILA);
-  const bob = await openStranger(browser, HONG_KONG, {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA, {
     controllableClock: true,
   });
   const firstId = await sessionId(bob);
@@ -279,8 +287,8 @@ test("a tab frozen in the background comes back on the map", async ({
   await expect(await dotOf(bob, alice)).toHaveCount(1);
 
   // And he's reachable again, not just visible.
-  await (await dotOf(alice, bob)).click();
-  await expect(bob.getByText(/wants to connect/i)).toBeVisible();
+  await sayHi(alice, bob);
+  await expect(bob.getByText(/wants to talk/i)).toBeVisible();
 
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
@@ -289,10 +297,10 @@ test("a tab frozen in the background comes back on the map", async ({
 test("a connection that can't be established frees both users", async ({
   browser,
 }) => {
-  const alice = await openStranger(browser, MANILA, { unreachable: true });
-  const bob = await openStranger(browser, HONG_KONG, { unreachable: true });
+  const alice = await openStranger(browser, PAPEETE, { unreachable: true });
+  const bob = await openStranger(browser, AVARUA, { unreachable: true });
 
-  await (await dotOf(alice, bob)).click();
+  await sayHi(alice, bob);
   await bob.getByRole("button", { name: "Accept" }).click();
 
   // Whichever side times out first gives up and tells the other; both get a
@@ -312,4 +320,32 @@ test("a connection that can't be established frees both users", async ({
 
   await alice.close({ runBeforeUnload: true });
   await bob.close({ runBeforeUnload: true });
+});
+
+test("the stranger card closes if they leave while it's open", async ({ browser }) => {
+  const alice = await openStranger(browser, PAPEETE);
+  const bob = await openStranger(browser, AVARUA);
+  await (await dotOf(alice, bob)).click();
+  const card = alice.getByRole("region", { name: "Selected stranger" });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText(/\d{1,2}:\d{2} [AP]M/);
+  await bob.close({ runBeforeUnload: true });
+  await expect(card).toBeHidden();
+  await alice.close({ runBeforeUnload: true });
+});
+
+test("the entry globe doesn't spin for reduced-motion users", async ({ browser }) => {
+  const still = await browser.newContext({ reducedMotion: "reduce" });
+  const moving = await browser.newContext();
+  const a = await still.newPage();
+  const b = await moving.newPage();
+  await a.goto("/");
+  await b.goto("/");
+  await expect(b.locator("[data-spinning='true']")).toHaveCount(1);
+  await expect(a.locator("[data-night-bands='4']")).toHaveCount(1);
+  // Give a spin that shouldn't happen time to start before asserting.
+  await a.waitForTimeout(1500);
+  await expect(a.locator("[data-spinning='false']")).toHaveCount(1);
+  await still.close();
+  await moving.close();
 });
